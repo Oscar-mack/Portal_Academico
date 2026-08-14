@@ -1,0 +1,31 @@
+node_modules/
+
+# Environment variables and credentials
+.env
+.env.*
+!.env.example
+.envrc
+
+# Private keys and local certificates
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Logs and generated runtime files
+*.log
+logs/
+tmp/
+coverage/
+
+# Editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local package-manager caches
+.npm/
+.cache/
+
+

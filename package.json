@@ -1,0 +1,40 @@
+{
+  "name": "portal-academico-backend",
+  "version": "1.0.0",
+  "description": "Backend del Portal Académico para Colegio o Universidad - API REST con Node.js, Express, Sequelize (PostgreSQL), autenticación JWT por roles, reportes PDF y pagos con Stripe.",
+  "keywords": [
+    "nodejs",
+    "express",
+    "sequelize",
+    "postgresql",
+    "rest",
+    "api",
+    "portal-academico"
+  ],
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "cross-env NODE_ENV=development node server.js",
+    "prod": "cross-env NODE_ENV=production node server.js",
+    "test": "node --check server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "body-parser": "^2.3.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "pdfkit": "^0.15.0",
+    "pg": "^8.23.0",
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.8",
+    "stripe": "^17.4.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}

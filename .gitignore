@@ -1,10 +1,10 @@
 node_modules/
 package-lock.json
+README.md
 
 # Environment variables and credentials
 .env
 .env.*
-!.env.example
 .envrc
 
 # Private keys and local certificates

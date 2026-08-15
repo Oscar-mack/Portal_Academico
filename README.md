@@ -131,4 +131,6 @@ npm run prod   # levanta el servidor con .env.production
 npm start      # equivalente a npm run dev (NODE_ENV por defecto: development)
 ```
 
+En Render, el comando de inicio debe ser `npm start`.
+
 

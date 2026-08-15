@@ -19,7 +19,7 @@
     "start": "node server.js",
     "dev": "cross-env NODE_ENV=development node server.js",
     "prod": "cross-env NODE_ENV=production node server.js",
-    "test": "node --check server.js"
+    "test": "node --check server.js && node --test"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

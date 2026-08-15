@@ -8,6 +8,8 @@ const Curso = db.cursos;
 const Catedratico = db.catedraticos;
 const GradoCarrera = db.gradosCarreras;
 const PadreAlumno = db.padresAlumnos;
+const AsignacionCurso = db.asignacionesCurso;
+const HorarioCatedratico = db.horariosCatedratico;
 
 // RF-09 — Reporte de notas por catedrático (Administrador, o el propio catedrático)
 exports.notasPorCatedratico = async (req, res) => {
@@ -114,8 +116,26 @@ exports.boletaPDF = async (req, res) => {
       if (!vinculo) {
         return res.status(403).send({ message: "No tienes acceso a la boleta de este alumno." });
       }
+    } else if (req.userRole === ROLES.CATEDRATICO) {
+      const catedratico = await Catedratico.findOne({ where: { usuarioId: req.userId } });
+      if (!catedratico) {
+        return res.status(403).send({ message: "No tienes un perfil de catedrático asociado." });
+      }
+
+      const horarios = await HorarioCatedratico.findAll({
+        where: { catedraticoId: catedratico.id },
+        attributes: ["cursoId"]
+      });
+      const cursosImpartidos = horarios.map(horario => horario.cursoId);
+      const imparteAlAlumno = cursosImpartidos.length > 0 && await AsignacionCurso.findOne({
+        where: { alumnoId, cursoId: cursosImpartidos }
+      });
+
+      if (!imparteAlAlumno) {
+        return res.status(403).send({ message: "Solo puedes consultar boletas de alumnos inscritos en tus cursos." });
+      }
     }
-    // Administrador y Catedrático (cualquiera que le imparta clase) pueden consultar
+    // El administrador puede consultar cualquier boleta.
 
     const alumno = await Alumno.findByPk(alumnoId, {
       include: [{ model: GradoCarrera, as: "gradoCarrera" }]

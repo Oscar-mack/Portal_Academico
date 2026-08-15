@@ -37,7 +37,7 @@ module.exports = (sequelize, DataTypes) => {
 		hooks: {
 			beforeValidate: nota => {
 				if (nota.valor !== undefined && nota.valor !== null) {
-					nota.estado = nota.valor >= 60 ? "aprobado" : "reprobado";
+					nota.estado = nota.valor >= 61 ? "aprobado" : "reprobado";
 				}
 			}
 		}

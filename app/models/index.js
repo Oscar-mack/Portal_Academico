@@ -1,13 +1,19 @@
 const dbConfig = require("../config/db.config.js");
 const { Sequelize } = require("sequelize");
 
-const sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
-	host: dbConfig.HOST,
-	port: dbConfig.PORT,
+const sequelizeOptions = {
 	dialect: dbConfig.dialect,
 	pool: dbConfig.pool,
 	dialectOptions: dbConfig.dialectOptions
-});
+};
+
+const sequelize = dbConfig.DATABASE_URL
+	? new Sequelize(dbConfig.DATABASE_URL, sequelizeOptions)
+	: new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
+		...sequelizeOptions,
+		host: dbConfig.HOST,
+		port: dbConfig.PORT
+	});
 
 const db = {};
 

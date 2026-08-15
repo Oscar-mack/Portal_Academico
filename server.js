@@ -1,13 +1,14 @@
-// Cargar la configuración privada y, si existe, sus valores por ambiente.
+// Las variables inyectadas por Render nunca se sobrescriben con archivos locales.
 const path = require("path");
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 require("dotenv").config({
-  path: path.resolve(__dirname, ".env")
+  path: path.resolve(__dirname, `.env.${NODE_ENV}`),
+  quiet: true
 });
 require("dotenv").config({
-  path: path.resolve(__dirname, `.env.${NODE_ENV}`),
-  override: true
+  path: path.resolve(__dirname, ".env"),
+  quiet: true
 });
 
 const express = require("express");
@@ -32,6 +33,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // ==================== Base de datos ====================
 const db = require("./app/models");
+const dbConfig = require("./app/config/db.config");
 
 // ==================== Ruta de prueba ====================
 app.get("/", (req, res) => {
@@ -64,13 +66,33 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 8080;
 
 async function startServer() {
+  const connectionSummary = dbConfig.getConnectionSummary();
+
+  console.log("Configuracion de PostgreSQL:", {
+    environment: NODE_ENV,
+    databaseUrlExists: Boolean(process.env.DATABASE_URL),
+    ...connectionSummary
+  });
+
   try {
     await db.sequelize.authenticate();
     console.log("Conexion con PostgreSQL verificada correctamente.");
 
     await db.sequelize.query("SELECT 1 AS database_connection_check");
     console.log("Consulta de prueba a PostgreSQL realizada correctamente.");
+  } catch (error) {
+    console.error("Error al conectar con PostgreSQL:", {
+      name: error.name,
+      message: error.message,
+      code: error.parent?.code || error.original?.code || error.code,
+      detail: error.parent?.detail || error.original?.detail,
+      ...connectionSummary
+    });
+    console.error(error);
+    process.exit(1);
+  }
 
+  try {
     await db.sequelize.sync();
     console.log("Base de datos sincronizada correctamente.");
 
@@ -78,12 +100,12 @@ async function startServer() {
       console.log(`Server is running on port ${PORT}.`);
     });
   } catch (error) {
-    console.error("Error al conectar o sincronizar la base de datos:", {
+    console.error("Error al sincronizar PostgreSQL:", {
       name: error.name,
       message: error.message,
       code: error.parent?.code || error.original?.code || error.code,
       detail: error.parent?.detail || error.original?.detail,
-      host: process.env.DB_HOST || process.env.PGHOST || "DATABASE_URL configurada"
+      ...connectionSummary
     });
     console.error(error);
     process.exit(1);
@@ -91,9 +113,6 @@ async function startServer() {
 }
 
 startServer();
-
-
-//Cambios nnecesarios 
 
 
 

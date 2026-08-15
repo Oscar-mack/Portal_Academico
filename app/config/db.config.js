@@ -3,6 +3,34 @@
 // solo leemos las variables ya presentes en process.env.
 const databaseUrl = process.env.DATABASE_URL;
 
+function getConnectionSummary() {
+  if (databaseUrl) {
+    try {
+      const parsedUrl = new URL(databaseUrl);
+
+      return {
+        source: "DATABASE_URL",
+        host: parsedUrl.hostname || "(missing)",
+        port: parsedUrl.port || "5432",
+        database: parsedUrl.pathname.replace(/^\//, "") || "(missing)",
+        sslMode: parsedUrl.searchParams.get("sslmode") || "configured by Sequelize"
+      };
+    } catch {
+      return {
+        source: "DATABASE_URL",
+        validUrl: false
+      };
+    }
+  }
+
+  return {
+    source: "individual environment variables",
+    host: process.env.DB_HOST || process.env.PGHOST || "(missing)",
+    port: String(process.env.DB_PORT || process.env.PGPORT || 5432),
+    database: process.env.DB_NAME || process.env.PGDATABASE || "(missing)"
+  };
+}
+
 module.exports = {
   DATABASE_URL: databaseUrl,
   HOST: process.env.DB_HOST || process.env.PGHOST,
@@ -22,7 +50,8 @@ module.exports = {
       require: true,
       rejectUnauthorized: false
     }
-  }
+  },
+  getConnectionSummary
 };
 
 

@@ -1,6 +1,4 @@
 node_modules/
-package-lock.json
-README.md
 
 # Environment variables and credentials
 .env
@@ -28,5 +26,6 @@ Thumbs.db
 # Local package-manager caches
 .npm/
 .cache/
+
 
 

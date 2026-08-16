@@ -1,122 +1,126 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useState } from "react";
+import { iniciarSesion, obtenerCursos } from "./api/api";
+import "./App.css";
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [mensaje, setMensaje] = useState("");
+  const [cursos, setCursos] = useState([]);
+
+  const [cargando, setCargando] = useState(false);
+
+  async function handleLogin(e) {
+    e.preventDefault();
+
+    setMensaje("");
+    setCargando(true);
+
+    try {
+      // 1. Iniciar sesión
+      const usuario = await iniciarSesion(username, password);
+
+      console.log("Usuario autenticado:", usuario);
+
+      // 2. Guardar JWT
+      localStorage.setItem("accessToken", usuario.accessToken);
+
+      // 3. Obtener cursos
+      const cursosObtenidos = await obtenerCursos(usuario.accessToken);
+
+      console.log("Cursos obtenidos:", cursosObtenidos);
+
+      setCursos(cursosObtenidos);
+
+      setMensaje(
+        `Bienvenido ${usuario.username}. Rol: ${usuario.rol}`
+      );
+    } catch (error) {
+      console.error(error);
+      setMensaje(error.message);
+    } finally {
+      setCargando(false);
+    }
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
+    <div className="pagina">
+
+      <h1>Portal Académico</h1>
+
+      <h2>Prueba de conexión</h2>
+
+      <form onSubmit={handleLogin}>
+
         <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
+          <label>Usuario</label>
+
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Escribe tu usuario"
+          />
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
+
+        <div>
+          <label>Contraseña</label>
+
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Escribe tu contraseña"
+          />
+        </div>
+
+        <button type="submit" disabled={cargando}>
+          {cargando ? "Conectando..." : "Iniciar sesión"}
         </button>
-      </section>
 
-      <div className="ticks"></div>
+      </form>
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      {mensaje && (
+        <p>
+          {mensaje}
+        </p>
+      )}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      {cursos.length > 0 && (
+        <section>
+
+          <h2>Cursos obtenidos desde PostgreSQL</h2>
+
+          {cursos.map((curso) => (
+            <article key={curso.id}>
+
+              <h3>{curso.nombre}</h3>
+
+              <p>
+                Código: {curso.codigo}
+              </p>
+
+              <p>
+                Créditos: {curso.creditos}
+              </p>
+
+              {curso.gradoCarrera && (
+                <p>
+                  Carrera: {curso.gradoCarrera.nombre}
+                </p>
+              )}
+
+            </article>
+          ))}
+
+        </section>
+      )}
+
+    </div>
+  );
 }
 
-export default App
+export default App;
+
+

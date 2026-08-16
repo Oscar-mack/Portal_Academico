@@ -3,6 +3,23 @@
 // solo leemos las variables ya presentes en process.env.
 const databaseUrl = process.env.DATABASE_URL;
 
+function isValidPostgresUrl(value) {
+  if (!value) {
+    return false;
+  }
+
+  try {
+    const parsedUrl = new URL(value);
+    return ["postgres:", "postgresql:"].includes(parsedUrl.protocol)
+      && Boolean(parsedUrl.hostname)
+      && parsedUrl.pathname !== "/";
+  } catch {
+    return false;
+  }
+}
+
+const validDatabaseUrl = isValidPostgresUrl(databaseUrl) ? databaseUrl : undefined;
+
 function getConnectionSummary() {
   if (databaseUrl) {
     try {
@@ -32,7 +49,8 @@ function getConnectionSummary() {
 }
 
 module.exports = {
-  DATABASE_URL: databaseUrl,
+  DATABASE_URL: validDatabaseUrl,
+  DATABASE_URL_CONFIGURED: Boolean(databaseUrl),
   HOST: process.env.DB_HOST || process.env.PGHOST,
   USER: process.env.DB_USER || process.env.PGUSER,
   PASSWORD: process.env.DB_PASSWORD || process.env.PGPASSWORD,

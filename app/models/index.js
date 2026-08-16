@@ -7,13 +7,32 @@ const sequelizeOptions = {
 	dialectOptions: dbConfig.dialectOptions
 };
 
-const sequelize = dbConfig.DATABASE_URL
-	? new Sequelize(dbConfig.DATABASE_URL, sequelizeOptions)
-	: new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
+const hasIndividualDatabaseConfiguration = [
+	dbConfig.HOST,
+	dbConfig.USER,
+	dbConfig.PASSWORD,
+	dbConfig.DB
+].every(Boolean);
+
+let sequelize;
+
+if (dbConfig.DATABASE_URL) {
+	sequelize = new Sequelize(dbConfig.DATABASE_URL, sequelizeOptions);
+} else if (hasIndividualDatabaseConfiguration) {
+	sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
 		...sequelizeOptions,
 		host: dbConfig.HOST,
 		port: dbConfig.PORT
 	});
+} else {
+	const reason = dbConfig.DATABASE_URL_CONFIGURED
+		? "DATABASE_URL no es una URL PostgreSQL válida"
+		: "DATABASE_URL no está configurada";
+
+	throw new Error(
+		`Configuración de PostgreSQL inválida: ${reason}. Configure DATABASE_URL o DB_HOST, DB_USER, DB_PASSWORD y DB_NAME.`
+	);
+}
 
 const db = {};
 

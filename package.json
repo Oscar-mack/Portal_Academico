@@ -15,6 +15,10 @@
   "author": "",
   "type": "commonjs",
   "main": "server.js",
+  "engines": {
+    "node": "22.x",
+    "npm": "10.x"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "cross-env NODE_ENV=development node server.js",

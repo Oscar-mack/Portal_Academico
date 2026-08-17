@@ -8,6 +8,7 @@ function App() {
 
   const [mensaje, setMensaje] = useState("");
   const [cursos, setCursos] = useState([]);
+  const [autenticado, setAutenticado] = useState(false);
 
   const [cargando, setCargando] = useState(false);
 
@@ -32,6 +33,7 @@ function App() {
       console.log("Cursos obtenidos:", cursosObtenidos);
 
       setCursos(cursosObtenidos);
+      setAutenticado(true);
 
       setMensaje(
         `Bienvenido ${usuario.username}. Rol: ${usuario.rol}`
@@ -44,6 +46,15 @@ function App() {
     }
   }
 
+  function handleLogout() {
+    localStorage.removeItem("accessToken");
+    setAutenticado(false);
+    setCursos([]);
+    setMensaje("");
+    setUsername("");
+    setPassword("");
+  }
+
   return (
     <div className="pagina">
 
@@ -51,40 +62,48 @@ function App() {
 
       <h2>Prueba de conexión</h2>
 
-      <form onSubmit={handleLogin}>
+      {!autenticado && (
+        <form onSubmit={handleLogin}>
 
-        <div>
-          <label>Usuario</label>
+          <div>
+            <label>Usuario</label>
 
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="Escribe tu usuario"
-          />
-        </div>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Escribe tu usuario"
+            />
+          </div>
 
-        <div>
-          <label>Contraseña</label>
+          <div>
+            <label>Contraseña</label>
 
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Escribe tu contraseña"
-          />
-        </div>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Escribe tu contraseña"
+            />
+          </div>
 
-        <button type="submit" disabled={cargando}>
-          {cargando ? "Conectando..." : "Iniciar sesión"}
-        </button>
+          <button type="submit" disabled={cargando}>
+            {cargando ? "Conectando..." : "Iniciar sesión"}
+          </button>
 
-      </form>
+        </form>
+      )}
 
       {mensaje && (
         <p>
           {mensaje}
         </p>
+      )}
+
+      {autenticado && (
+        <button type="button" onClick={handleLogout}>
+          Cerrar sesión
+        </button>
       )}
 
       {cursos.length > 0 && (

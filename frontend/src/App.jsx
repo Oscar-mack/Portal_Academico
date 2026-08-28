@@ -59,6 +59,7 @@ function App() {
     <div className="pagina">
 
       <h1>Portal Académico</h1>
+      <p>Prueba de integración Azure DevOps + GitHub + React</p>
 
       <h2>Prueba de conexión</h2>
 

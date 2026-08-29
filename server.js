@@ -26,15 +26,16 @@ var corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// El webhook de Stripe (app/routes/pago.routes.js) usa su propio bodyParser.raw()
-// en su ruta específica, por lo que no entra en conflicto con este parser global.
-require("./app/routes/pago.routes")(app);
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
 // ==================== Base de datos ====================
 const db = require("./app/models");
 const dbConfig = require("./app/config/db.config");
+const pagos = require("./app/controllers/pago.controller.js");
+
+// Stripe verifica la firma con los bytes exactos de la solicitud. Esta ruta
+// debe registrarse antes de cualquier parser JSON.
+app.post("/api/pagos/webhook", express.raw({ type: "application/json" }), pagos.webhook);
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // ==================== Ruta de prueba ====================
 app.get("/", (req, res) => {
@@ -51,6 +52,7 @@ require("./app/routes/asignacionCurso.routes")(app);
 require("./app/routes/horarioCatedratico.routes")(app);
 require("./app/routes/nota.routes")(app);
 require("./app/routes/reporte.routes")(app);
+require("./app/routes/pago.routes")(app);
 
 // ==================== Manejo de errores no controlados ====================
 app.use((req, res) => {

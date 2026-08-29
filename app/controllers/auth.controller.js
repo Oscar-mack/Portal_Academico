@@ -70,7 +70,12 @@ exports.signup = async (req, res) => {
 
 exports.signin = async (req, res) => {
   try {
-    const usuario = await Usuario.findOne({ where: { username: req.body.username } });
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).send({ message: "username y password son requeridos." });
+    }
+
+    const usuario = await Usuario.findOne({ where: { username } });
 
     if (!usuario) {
       return res.status(404).send({ message: "Usuario no encontrado." });
@@ -79,7 +84,7 @@ exports.signin = async (req, res) => {
       return res.status(403).send({ message: "El usuario se encuentra inactivo." });
     }
 
-    const passwordValida = bcrypt.compareSync(req.body.password, usuario.password);
+    const passwordValida = bcrypt.compareSync(password, usuario.password);
     if (!passwordValida) {
       return res.status(401).send({ message: "Contraseña incorrecta." });
     }
@@ -89,6 +94,12 @@ exports.signin = async (req, res) => {
     });
 
     res.status(200).send({
+      message: "Login exitoso",
+      token,
+      usuario: {
+        id: usuario.id,
+        rol: usuario.rol
+      },
       id: usuario.id,
       username: usuario.username,
       email: usuario.email,

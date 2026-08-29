@@ -2,7 +2,29 @@ import { useState } from "react";
 import { iniciarSesion, obtenerCursos } from "./api/api";
 import "./App.css";
 
+function EstadoPago({ exitoso }) {
+  return (
+    <div className="pagina">
+      <h1>{exitoso ? "Pago completado" : "Pago cancelado"}</h1>
+      <p>
+        {exitoso
+          ? "Tu pago fue recibido correctamente."
+          : "No se realizó ningún cargo. Puedes intentar el pago nuevamente cuando estés listo."}
+      </p>
+      <a href="/">Volver al Portal Académico</a>
+    </div>
+  );
+}
+
 function App() {
+  if (window.location.pathname === "/pago-exitoso") {
+    return <EstadoPago exitoso />;
+  }
+
+  if (window.location.pathname === "/pago-cancelado") {
+    return <EstadoPago exitoso={false} />;
+  }
+
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 

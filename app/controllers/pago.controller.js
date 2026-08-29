@@ -8,10 +8,10 @@ const PadreAlumno = db.padresAlumnos;
 
 const SUCCESS_URL = process.env.APP_URL
   ? `${process.env.APP_URL}/pago-exitoso`
-  : "http://localhost:8080/pago-exitoso";
+  : "http://localhost:5173/pago-exitoso";
 const CANCEL_URL = process.env.APP_URL
   ? `${process.env.APP_URL}/pago-cancelado`
-  : "http://localhost:8080/pago-cancelado";
+  : "http://localhost:5173/pago-cancelado";
 
 const getStripe = () => {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -25,8 +25,15 @@ exports.crearSesion = async (req, res) => {
   try {
     const stripe = getStripe();
     const { alumnoId, concepto, monto } = req.body;
-    if (!alumnoId || !concepto || !monto) {
+    const montoNumerico = Number(monto);
+
+    if (!alumnoId || !concepto || !Number.isFinite(montoNumerico) || montoNumerico <= 0) {
       return res.status(400).send({ message: "alumnoId, concepto y monto son requeridos." });
+    }
+
+    const montoEnCentavos = Math.round(montoNumerico * 100);
+    if (!Number.isSafeInteger(montoEnCentavos) || montoEnCentavos < 1) {
+      return res.status(400).send({ message: "El monto debe ser mayor que cero y válido." });
     }
 
     const alumno = await Alumno.findByPk(alumnoId);
@@ -47,7 +54,7 @@ exports.crearSesion = async (req, res) => {
     }
 
     const pago = await Pago.create({
-      alumnoId, concepto, monto, estado: "pendiente"
+      alumnoId, concepto, monto: montoNumerico, estado: "pendiente"
     });
 
     const session = await stripe.checkout.sessions.create({
@@ -58,7 +65,7 @@ exports.crearSesion = async (req, res) => {
           price_data: {
             currency: "usd",
             product_data: { name: `${concepto} - ${alumno.nombre} ${alumno.apellido}` },
-            unit_amount: Math.round(monto * 100)
+            unit_amount: montoEnCentavos
           },
           quantity: 1
         }

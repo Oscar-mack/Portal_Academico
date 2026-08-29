@@ -24,6 +24,7 @@
     "dev": "cross-env NODE_ENV=development node server.js",
     "prod": "cross-env NODE_ENV=production node server.js",
     "create-admin": "node scripts/create-admin.js",
+    "reset-password": "node scripts/reset-user-password.js",
     "test": "node --check server.js && node --test"
   },
   "dependencies": {

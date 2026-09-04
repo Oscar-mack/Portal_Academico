@@ -16,7 +16,6 @@ const { Op } = require("sequelize");
 const username = process.env.ADMIN_USERNAME;
 const email = process.env.ADMIN_EMAIL;
 const password = process.env.ADMIN_PASSWORD;
-const databaseUrl = process.env.DATABASE_URL;
 
 function validateInput() {
   if (!username || !email || !password) {
@@ -27,21 +26,6 @@ function validateInput() {
 
   if (password.length < 12) {
     throw new Error("ADMIN_PASSWORD debe contener al menos 12 caracteres.");
-  }
-
-  if (!databaseUrl || databaseUrl.includes("PEGA_") || databaseUrl.includes("postgresql://postgresql://")) {
-    throw new Error(
-      "Defina DATABASE_URL con la cadena completa de Neon de la rama production; no use un texto de ejemplo."
-    );
-  }
-
-  try {
-    const parsedUrl = new URL(databaseUrl);
-    if (!["postgres:", "postgresql:"].includes(parsedUrl.protocol) || !parsedUrl.hostname.includes("neon.tech")) {
-      throw new Error();
-    }
-  } catch {
-    throw new Error("DATABASE_URL no es una URL válida de Neon.");
   }
 }
 

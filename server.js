@@ -51,6 +51,7 @@ require("./app/routes/alumno.routes")(app);
 require("./app/routes/curso.routes")(app);
 require("./app/routes/asignacionCurso.routes")(app);
 require("./app/routes/horarioCatedratico.routes")(app);
+require("./app/routes/padreAlumno.routes")(app);
 require("./app/routes/nota.routes")(app);
 require("./app/routes/reporte.routes")(app);
 require("./app/routes/pago.routes")(app);

@@ -1,4 +1,4 @@
-const { verifyToken, isAdminOrCatedratico, isAnyRole } = require("../middlewares/authJwt.js");
+const { verifyToken, isAdmin, isAdminOrCatedratico, isAnyRole } = require("../middlewares/authJwt.js");
 
 module.exports = app => {
   const notas = require("../controllers/nota.controller.js");
@@ -13,7 +13,9 @@ module.exports = app => {
   router.get("/", [verifyToken, isAnyRole], notas.findAll);
   router.get("/:id", [verifyToken, isAnyRole], notas.findOne);
   router.put("/:id", [verifyToken, isAdminOrCatedratico], notas.update);
-  router.delete("/:id", [verifyToken, isAdminOrCatedratico], notas.delete);
+
+  // Eliminación reservada al Administrador.
+  router.delete("/:id", [verifyToken, isAdmin], notas.delete);
 
   app.use("/api/notas", router);
 };

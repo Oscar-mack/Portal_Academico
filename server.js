@@ -44,6 +44,7 @@ app.get("/", (req, res) => {
 
 // ==================== Rutas ====================
 require("./app/routes/auth.routes")(app);
+require("./app/routes/usuario.routes")(app);
 require("./app/routes/gradoCarrera.routes")(app);
 require("./app/routes/catedratico.routes")(app);
 require("./app/routes/alumno.routes")(app);

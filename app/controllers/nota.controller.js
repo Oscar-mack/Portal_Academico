@@ -170,18 +170,12 @@ exports.update = async (req, res) => {
   }
 };
 
+// Solo el Administrador puede eliminar notas (validado también en la ruta).
 exports.delete = async (req, res) => {
   try {
     const nota = await Nota.findByPk(req.params.id);
     if (!nota) {
       return res.status(404).send({ message: `No se encontró la nota con id=${req.params.id}.` });
-    }
-
-    if (req.userRole === ROLES.CATEDRATICO) {
-      const catedratico = await Catedratico.findOne({ where: { usuarioId: req.userId } });
-      if (!catedratico || catedratico.id !== nota.catedraticoId) {
-        return res.status(403).send({ message: "Solo el catedrático responsable puede eliminar esta nota." });
-      }
     }
 
     await nota.destroy();

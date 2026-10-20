@@ -54,7 +54,8 @@ exports.crearSesion = async (req, res) => {
     }
 
     const pago = await Pago.create({
-      alumnoId, concepto, monto: montoNumerico, estado: "pendiente"
+      alumnoId, concepto, monto: montoNumerico, estado: "pendiente",
+      moneda: (process.env.PAYMENT_CURRENCY || "usd").toLowerCase()
     });
 
     const session = await stripe.checkout.sessions.create({
@@ -63,7 +64,7 @@ exports.crearSesion = async (req, res) => {
       line_items: [
         {
           price_data: {
-            currency: "usd",
+            currency: pago.moneda,
             product_data: { name: `${concepto} - ${alumno.nombre} ${alumno.apellido}` },
             unit_amount: montoEnCentavos
           },
@@ -96,15 +97,29 @@ exports.webhook = async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  if (event.type === "checkout.session.completed") {
+  try {
     const session = event.data.object;
-    const pagoId = session.metadata && session.metadata.pagoId;
-    if (pagoId) {
-      await Pago.update(
-        { estado: "pagado", fechaPago: new Date() },
-        { where: { id: pagoId } }
-      );
+    const pagoId = session && session.metadata && session.metadata.pagoId;
+
+    if (pagoId && ["checkout.session.completed", "checkout.session.expired"].includes(event.type)) {
+      const pago = await Pago.findByPk(pagoId);
+
+      // Idempotente: solo un pago pendiente cambia de estado; los eventos repetidos se ignoran.
+      if (pago && pago.estado === "pendiente" && pago.stripeSessionId === session.id) {
+        if (event.type === "checkout.session.completed" && session.payment_status === "paid") {
+          pago.estado = "pagado";
+          pago.fechaPago = new Date();
+          await pago.save();
+        } else if (event.type === "checkout.session.expired") {
+          pago.estado = "cancelado";
+          await pago.save();
+        }
+      }
     }
+  } catch (error) {
+    console.error("Error al procesar el webhook de pago:", error.message);
+    // 500 para que Stripe reintente el evento.
+    return res.status(500).send({ message: "Error al procesar el evento." });
   }
 
   res.json({ received: true });

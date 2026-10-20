@@ -16,7 +16,10 @@ const hasIndividualDatabaseConfiguration = [
 
 let sequelize;
 
-if (dbConfig.DATABASE_URL) {
+if (process.env.NODE_ENV === "test") {
+	// Las pruebas de integración usan una base SQLite en memoria.
+	sequelize = new Sequelize("sqlite::memory:", { logging: false });
+} else if (dbConfig.DATABASE_URL) {
 	sequelize = new Sequelize(dbConfig.DATABASE_URL, sequelizeOptions);
 } else if (hasIndividualDatabaseConfiguration) {
 	sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {

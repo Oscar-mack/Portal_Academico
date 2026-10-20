@@ -17,8 +17,8 @@ exports.create = async (req, res) => {
     if (!alumnoId || !cursoId || valor === undefined) {
       return res.status(400).send({ message: "alumnoId, cursoId y valor son requeridos." });
     }
-    if (valor < 0 || valor > 100) {
-      return res.status(400).send({ message: "El valor de la nota debe estar entre 0 y 100." });
+    if (typeof valor !== "number" || !Number.isFinite(valor) || valor < 0 || valor > 100) {
+      return res.status(400).send({ message: "El valor de la nota debe ser un número entre 0 y 100." });
     }
 
     // Determinar el catedratico responsable según el rol de quien hace la petición
@@ -45,7 +45,9 @@ exports.create = async (req, res) => {
     }
 
     // Validar que el alumno esté inscrito en el curso
-    const inscripcion = await AsignacionCurso.findOne({ where: { alumnoId, cursoId } });
+    const inscripcion = await AsignacionCurso.findOne({
+      where: { alumnoId, cursoId, periodo: periodo || "2026" }
+    });
     if (!inscripcion) {
       return res.status(400).send({ message: "El alumno no está inscrito en este curso." });
     }
@@ -157,8 +159,9 @@ exports.update = async (req, res) => {
       }
     }
 
-    if (req.body.valor !== undefined && (req.body.valor < 0 || req.body.valor > 100)) {
-      return res.status(400).send({ message: "El valor de la nota debe estar entre 0 y 100." });
+    const nuevoValor = req.body.valor;
+    if (nuevoValor !== undefined && (typeof nuevoValor !== "number" || !Number.isFinite(nuevoValor) || nuevoValor < 0 || nuevoValor > 100)) {
+      return res.status(400).send({ message: "El valor de la nota debe ser un número entre 0 y 100." });
     }
 
     nota.valor = req.body.valor !== undefined ? req.body.valor : nota.valor;

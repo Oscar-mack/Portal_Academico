@@ -3,6 +3,7 @@ const Alumno = db.alumnos;
 const GradoCarrera = db.gradosCarreras;
 const Curso = db.cursos;
 const Nota = db.notas;
+const { getAlumnoIdsVisibles } = require("../utils/access.js");
 
 // RF-03 — Gestión de alumnos (RN-01: un alumno debe estar asociado a un grado/carrera)
 exports.create = async (req, res) => {
@@ -30,6 +31,10 @@ exports.findAll = async (req, res) => {
     const where = {};
     if (req.query.gradoCarreraId) where.gradoCarreraId = req.query.gradoCarreraId;
 
+    // Cada rol solo ve a los alumnos que le corresponden.
+    const visibles = await getAlumnoIdsVisibles(req);
+    if (visibles) where.id = visibles;
+
     const alumnos = await Alumno.findAll({
       where,
       include: [{ model: GradoCarrera, as: "gradoCarrera" }]
@@ -42,6 +47,11 @@ exports.findAll = async (req, res) => {
 
 exports.findOne = async (req, res) => {
   try {
+    const visibles = await getAlumnoIdsVisibles(req);
+    if (visibles && !visibles.includes(Number(req.params.id))) {
+      return res.status(403).send({ message: "No tienes acceso a este alumno." });
+    }
+
     const alumno = await Alumno.findByPk(req.params.id, {
       include: [
         { model: GradoCarrera, as: "gradoCarrera" },

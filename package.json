@@ -25,7 +25,7 @@
     "prod": "cross-env NODE_ENV=production node server.js",
     "create-admin": "node scripts/create-admin.js",
     "reset-password": "node scripts/reset-user-password.js",
-    "test": "node --check server.js && node --test"
+    "test": "node --check app.js && node --check server.js && node --test"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -33,6 +33,8 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "pdfkit": "^0.15.0",
     "pg": "^8.23.0",
@@ -41,6 +43,8 @@
     "stripe": "^17.4.0"
   },
   "devDependencies": {
-    "cross-env": "^7.0.3"
+    "cross-env": "^7.0.3",
+    "sqlite3": "^6.0.1",
+    "supertest": "^7.3.1"
   }
 }

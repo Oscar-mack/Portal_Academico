@@ -1,0 +1,1092 @@
+openapi: 3.0.3
+info:
+  title: Portal Académico API
+  version: 1.0.0
+  description: |
+    API REST del Portal Académico (catedráticos, alumnos, cursos, asignaciones, notas, reportes y pagos).
+
+    - Autenticación: JWT en `Authorization: Bearer <token>` (se obtiene en `/api/auth/signin`).
+    - Roles: `admin`, `catedratico`, `alumno`, `padre`. Cada endpoint indica los roles permitidos.
+    - Escala de notas: 0-100; 61 o más aprueba, 60 o menos reprueba.
+    - Los listados no están paginados; se filtran con los parámetros de consulta indicados.
+    - Errores: todas las respuestas de error tienen la forma `{ "message": "..." }`.
+servers:
+  - url: http://localhost:8080
+    description: Desarrollo
+security:
+  - bearerAuth: []
+tags:
+  - name: Sistema
+  - name: Auth
+  - name: Usuarios
+  - name: Grados/Carreras
+  - name: Catedráticos
+  - name: Alumnos
+  - name: Cursos
+  - name: Asignaciones
+  - name: Horarios
+  - name: Padres/Tutores
+  - name: Notas
+  - name: Reportes
+  - name: Pagos
+paths:
+  /health:
+    get:
+      tags: [Sistema]
+      summary: Liveness del servicio
+      security: []
+      responses:
+        "200":
+          description: El proceso responde
+          content:
+            application/json:
+              example: { status: ok }
+  /ready:
+    get:
+      tags: [Sistema]
+      summary: Readiness (verifica la conexión con la base de datos)
+      security: []
+      responses:
+        "200":
+          description: Listo
+          content:
+            application/json:
+              example: { status: ready }
+        "503":
+          description: Base de datos no disponible
+  /api/auth/signin:
+    post:
+      tags: [Auth]
+      summary: Iniciar sesión
+      description: Limitado por IP (por defecto 20 intentos cada 15 minutos).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignInRequest"
+            example: { username: admin, password: ClaveSegura123 }
+      responses:
+        "200":
+          description: Sesión iniciada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignInResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Credenciales inválidas (misma respuesta para usuario inexistente o contraseña incorrecta)
+          content:
+            application/json:
+              example: { message: Credenciales inválidas. }
+        "403":
+          description: Usuario inactivo
+        "429":
+          description: Demasiados intentos
+  /api/auth/signup:
+    post:
+      tags: [Auth]
+      summary: Registrar un usuario (solo admin)
+      description: Roles permitidos `admin`. La contraseña debe tener al menos 8 caracteres.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignUpRequest"
+      responses:
+        "200":
+          description: Usuario creado
+          content:
+            application/json:
+              example: { message: Usuario registrado exitosamente!, id: 5, rol: alumno }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/auth/perfil:
+    get:
+      tags: [Auth]
+      summary: Perfil del usuario autenticado
+      description: Cualquier rol autenticado.
+      responses:
+        "200":
+          description: Perfil (sin contraseña)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Usuario"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/usuarios:
+    get:
+      tags: [Usuarios]
+      summary: Listar usuarios (admin)
+      parameters:
+        - name: rol
+          in: query
+          schema: { $ref: "#/components/schemas/Rol" }
+      responses:
+        "200":
+          description: Lista de usuarios
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Usuario" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/usuarios/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Usuarios]
+      summary: Obtener un usuario (admin)
+      responses:
+        "200":
+          description: Usuario
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Usuario" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Usuarios]
+      summary: Actualizar username, email, rol o activo (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                email: { type: string, format: email }
+                rol: { $ref: "#/components/schemas/Rol" }
+                activo: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Usuarios]
+      summary: Eliminar un usuario (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/grados-carreras:
+    get:
+      tags: [Grados/Carreras]
+      summary: Listar grados/carreras (cualquier rol)
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GradoCarrera" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Grados/Carreras]
+      summary: Crear grado/carrera (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GradoCarreraInput" }
+      responses:
+        "200":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GradoCarrera" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/grados-carreras/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Grados/Carreras]
+      summary: Obtener grado/carrera (cualquier rol)
+      responses:
+        "200":
+          description: Grado/carrera
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GradoCarrera" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Grados/Carreras]
+      summary: Actualizar grado/carrera (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GradoCarreraInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Grados/Carreras]
+      summary: Eliminar grado/carrera (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/catedraticos:
+    get:
+      tags: [Catedráticos]
+      summary: Listar catedráticos (cualquier rol)
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Catedratico" }
+    post:
+      tags: [Catedráticos]
+      summary: Crear catedrático (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CatedraticoInput" }
+      responses:
+        "200":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Catedratico" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/catedraticos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Catedráticos]
+      summary: Obtener catedrático (cualquier rol)
+      responses:
+        "200":
+          description: Catedrático
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Catedratico" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Catedráticos]
+      summary: Actualizar catedrático (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CatedraticoInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Catedráticos]
+      summary: Eliminar catedrático (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/alumnos:
+    get:
+      tags: [Alumnos]
+      summary: Listar alumnos visibles para el rol
+      description: |
+        admin: todos. catedrático: alumnos inscritos en sus cursos. alumno: solo él mismo.
+        padre: solo sus hijos vinculados.
+      parameters:
+        - name: gradoCarreraId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Alumno" }
+    post:
+      tags: [Alumnos]
+      summary: Crear alumno (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AlumnoInput" }
+      responses:
+        "200":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Alumno" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/alumnos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Alumnos]
+      summary: Obtener alumno (solo si el rol tiene acceso a él)
+      responses:
+        "200":
+          description: Alumno con su grado/carrera y cursos
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Alumno" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Alumnos]
+      summary: Actualizar alumno (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AlumnoInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Alumnos]
+      summary: Eliminar alumno (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/cursos:
+    get:
+      tags: [Cursos]
+      summary: Listar cursos (cualquier rol)
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Curso" }
+    post:
+      tags: [Cursos]
+      summary: Crear curso (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CursoInput" }
+      responses:
+        "200":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Curso" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/cursos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Cursos]
+      summary: Obtener curso (cualquier rol)
+      responses:
+        "200":
+          description: Curso
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Curso" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Cursos]
+      summary: Actualizar curso (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CursoInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Cursos]
+      summary: Eliminar curso (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/asignaciones-curso:
+    get:
+      tags: [Asignaciones]
+      summary: Listar asignaciones visibles para el rol
+      parameters:
+        - name: alumnoId
+          in: query
+          schema: { type: integer }
+        - name: cursoId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AsignacionCurso" }
+    post:
+      tags: [Asignaciones]
+      summary: Asignar un curso a un alumno (admin)
+      description: |
+        Valida que el curso pertenezca al grado/carrera del alumno, que ambos estén activos
+        y que el horario del curso no se cruce con otros cursos del alumno en el mismo periodo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AsignacionInput" }
+      responses:
+        "200":
+          description: Asignación creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AsignacionCurso" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Asignación duplicada o cruce de horario
+  /api/asignaciones-curso/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Asignaciones]
+      summary: Obtener asignación (solo si el rol tiene acceso al alumno)
+      responses:
+        "200":
+          description: Asignación
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AsignacionCurso" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Asignaciones]
+      summary: Actualizar asignación (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AsignacionInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Asignaciones]
+      summary: Eliminar asignación (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/horarios-catedratico:
+    get:
+      tags: [Horarios]
+      summary: Listar horarios (cualquier rol)
+      parameters:
+        - name: catedraticoId
+          in: query
+          schema: { type: integer }
+        - name: cursoId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Horario" }
+    post:
+      tags: [Horarios]
+      summary: Asignar curso y horario a un catedrático (admin)
+      description: Valida formato HH:MM, horaInicio menor que horaFin y que no se cruce con otro horario del catedrático.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HorarioInput" }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Horario" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Cruce de horario del catedrático
+  /api/horarios-catedratico/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Horarios]
+      summary: Obtener horario (cualquier rol)
+      responses:
+        "200":
+          description: Horario
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Horario" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Horarios]
+      summary: Actualizar horario (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HorarioInput" }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Horarios]
+      summary: Eliminar horario (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/padres-alumnos:
+    get:
+      tags: [Padres/Tutores]
+      summary: Listar vínculos padre-alumno (admin)
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PadreAlumno" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Padres/Tutores]
+      summary: Vincular un usuario padre con un alumno (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [usuarioId, alumnoId]
+              properties:
+                usuarioId: { type: integer }
+                alumnoId: { type: integer }
+                parentesco: { type: string, example: Madre }
+      responses:
+        "201":
+          description: Vínculo creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PadreAlumno" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Vínculo ya existente
+  /api/padres-alumnos/{id}:
+    delete:
+      tags: [Padres/Tutores]
+      summary: Eliminar vínculo (admin)
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/notas:
+    get:
+      tags: [Notas]
+      summary: Consultar notas según el rol
+      description: |
+        admin: todas (filtros opcionales). catedrático: las que registró. alumno: las propias.
+        padre: las de sus hijos vinculados.
+      parameters:
+        - name: cursoId
+          in: query
+          schema: { type: integer }
+        - name: periodo
+          in: query
+          schema: { type: string, example: "2026" }
+        - name: alumnoId
+          in: query
+          description: Solo admin y padre (limitado a sus hijos)
+          schema: { type: integer }
+        - name: catedraticoId
+          in: query
+          description: Solo admin
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Nota" }
+    post:
+      tags: [Notas]
+      summary: Registrar una nota (admin o catedrático responsable del curso)
+      description: |
+        El catedrático debe tener asignado el curso y el alumno debe estar inscrito en el mismo periodo.
+        Como admin se debe enviar `catedraticoId`. `valor` debe ser un número entre 0 y 100.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotaInput" }
+            example: { alumnoId: 1, cursoId: 1, valor: 85, periodo: "2026" }
+      responses:
+        "200":
+          description: Nota registrada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Nota" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Ya existe una nota para el alumno, curso y periodo
+  /api/notas/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Notas]
+      summary: Obtener una nota (si el rol tiene acceso)
+      responses:
+        "200":
+          description: Nota
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Nota" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Notas]
+      summary: Actualizar el valor de una nota (admin o catedrático que la registró)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                valor: { type: number, minimum: 0, maximum: 100 }
+      responses:
+        "200":
+          description: Nota actualizada
+          content:
+            application/json:
+              example: { message: Nota actualizada exitosamente., nota: { id: 1, valor: 61, estado: aprobado } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Notas]
+      summary: Eliminar una nota (admin)
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/reportes/notas-por-catedratico/{catedraticoId}:
+    get:
+      tags: [Reportes]
+      summary: Reporte de notas por catedrático (admin o el propio catedrático)
+      parameters:
+        - name: catedraticoId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: periodo
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Reporte
+          content:
+            application/json:
+              schema:
+                type: object
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/reportes/indicadores:
+    get:
+      tags: [Reportes]
+      summary: Indicadores de aprobación por rango de nota (admin)
+      parameters:
+        - name: periodo
+          in: query
+          schema: { type: string }
+        - name: cursoId
+          in: query
+          schema: { type: integer }
+        - name: gradoCarreraId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Indicadores
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Indicadores" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/reportes/boleta-pdf/{alumnoId}:
+    get:
+      tags: [Reportes]
+      summary: Boleta de notas en PDF
+      description: admin, catedrático del alumno, el propio alumno o su padre/tutor.
+      parameters:
+        - name: alumnoId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: periodo
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Archivo PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/pagos/checkout:
+    post:
+      tags: [Pagos]
+      summary: Crear sesión de pago en Stripe (alumno por sí mismo, padre por sus hijos)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckoutRequest" }
+            example: { alumnoId: 1, concepto: Colegiatura Agosto 2026, monto: 250.0 }
+      responses:
+        "200":
+          description: Sesión creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/pagos:
+    get:
+      tags: [Pagos]
+      summary: Consultar pagos (admin: todos; alumno/padre: los propios)
+      parameters:
+        - name: alumnoId
+          in: query
+          description: Solo admin
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Pago" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/pagos/webhook:
+    post:
+      tags: [Pagos]
+      summary: Webhook de Stripe
+      description: |
+        Uso exclusivo de Stripe. Verifica la cabecera `Stripe-Signature`. Es idempotente:
+        solo un pago `pendiente` cambia de estado. `checkout.session.completed` (con cobro confirmado)
+        marca `pagado`; `checkout.session.expired` marca `cancelado`.
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Evento recibido
+          content:
+            application/json:
+              example: { received: true }
+        "400":
+          description: Firma inválida
+        "500":
+          description: Error al procesar; Stripe reintentará
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+  responses:
+    Message:
+      description: Operación exitosa
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: Datos inválidos
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Token inválido o expirado
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Sin token o sin permisos para el recurso
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+    Rol:
+      type: string
+      enum: [admin, catedratico, alumno, padre]
+    SignInRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+    SignInResponse:
+      type: object
+      properties:
+        message: { type: string }
+        token: { type: string }
+        accessToken: { type: string }
+        expiresIn: { type: string, example: 8h }
+        id: { type: integer }
+        username: { type: string }
+        email: { type: string }
+        rol: { $ref: "#/components/schemas/Rol" }
+        usuario:
+          type: object
+          properties:
+            id: { type: integer }
+            rol: { $ref: "#/components/schemas/Rol" }
+    SignUpRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 8 }
+        rol: { $ref: "#/components/schemas/Rol" }
+        catedraticoId: { type: integer, description: Solo rol catedratico }
+        alumnoId: { type: integer, description: Solo rol alumno }
+        alumnoIds:
+          type: array
+          items: { type: integer }
+          description: Solo rol padre
+    Usuario:
+      type: object
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        email: { type: string, format: email }
+        rol: { $ref: "#/components/schemas/Rol" }
+        activo: { type: boolean }
+        perfilCatedratico: { $ref: "#/components/schemas/Catedratico" }
+        perfilAlumno: { $ref: "#/components/schemas/Alumno" }
+    GradoCarreraInput:
+      type: object
+      required: [nombre]
+      properties:
+        nombre: { type: string }
+        nivel: { type: string, example: Universitario }
+        descripcion: { type: string }
+        activo: { type: boolean }
+    GradoCarrera:
+      allOf:
+        - $ref: "#/components/schemas/GradoCarreraInput"
+        - type: object
+          properties:
+            id: { type: integer }
+    CatedraticoInput:
+      type: object
+      required: [nombre, apellido, email]
+      properties:
+        nombre: { type: string }
+        apellido: { type: string }
+        email: { type: string, format: email }
+        telefono: { type: string }
+        especialidad: { type: string }
+    Catedratico:
+      allOf:
+        - $ref: "#/components/schemas/CatedraticoInput"
+        - type: object
+          properties:
+            id: { type: integer }
+            usuarioId: { type: integer, nullable: true }
+            activo: { type: boolean }
+    AlumnoInput:
+      type: object
+      required: [nombre, apellido, email, gradoCarreraId]
+      properties:
+        nombre: { type: string }
+        apellido: { type: string }
+        email: { type: string, format: email }
+        telefono: { type: string }
+        gradoCarreraId: { type: integer }
+    Alumno:
+      allOf:
+        - $ref: "#/components/schemas/AlumnoInput"
+        - type: object
+          properties:
+            id: { type: integer }
+            usuarioId: { type: integer, nullable: true }
+            activo: { type: boolean }
+            gradoCarrera: { $ref: "#/components/schemas/GradoCarrera" }
+    CursoInput:
+      type: object
+      required: [nombre, codigo, gradoCarreraId]
+      properties:
+        nombre: { type: string }
+        codigo: { type: string }
+        creditos: { type: integer }
+        gradoCarreraId: { type: integer }
+    Curso:
+      allOf:
+        - $ref: "#/components/schemas/CursoInput"
+        - type: object
+          properties:
+            id: { type: integer }
+            activo: { type: boolean }
+    AsignacionInput:
+      type: object
+      required: [alumnoId, cursoId]
+      properties:
+        alumnoId: { type: integer }
+        cursoId: { type: integer }
+        periodo: { type: string, default: "2026" }
+    AsignacionCurso:
+      allOf:
+        - $ref: "#/components/schemas/AsignacionInput"
+        - type: object
+          properties:
+            id: { type: integer }
+    HorarioInput:
+      type: object
+      required: [catedraticoId, cursoId, dia, horaInicio, horaFin]
+      properties:
+        catedraticoId: { type: integer }
+        cursoId: { type: integer }
+        dia: { type: string, enum: [Lunes, Martes, Miercoles, Jueves, Viernes, Sabado] }
+        horaInicio: { type: string, example: "08:00", pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+        horaFin: { type: string, example: "10:00", pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+        periodo: { type: string, default: "2026" }
+    Horario:
+      allOf:
+        - $ref: "#/components/schemas/HorarioInput"
+        - type: object
+          properties:
+            id: { type: integer }
+    PadreAlumno:
+      type: object
+      properties:
+        id: { type: integer }
+        usuarioId: { type: integer }
+        alumnoId: { type: integer }
+        parentesco: { type: string }
+    NotaInput:
+      type: object
+      required: [alumnoId, cursoId, valor]
+      properties:
+        alumnoId: { type: integer }
+        cursoId: { type: integer }
+        valor: { type: number, minimum: 0, maximum: 100 }
+        periodo: { type: string, default: "2026" }
+        catedraticoId: { type: integer, description: Obligatorio si quien registra es admin }
+    Nota:
+      type: object
+      properties:
+        id: { type: integer }
+        alumnoId: { type: integer }
+        cursoId: { type: integer }
+        catedraticoId: { type: integer }
+        valor: { type: number }
+        estado: { type: string, enum: [aprobado, reprobado], description: "61 o más aprueba" }
+        periodo: { type: string }
+    Indicadores:
+      type: object
+      properties:
+        totalAlumnos: { type: integer }
+        totalNotasEvaluadas: { type: integer }
+        aprobados: { type: integer }
+        reprobados: { type: integer }
+        porcentajeAprobacion: { type: number }
+        distribucionPorRango:
+          type: object
+          additionalProperties: { type: integer }
+          example: { "0-60 (Reprobado)": 3, "61-70": 5, "71-80": 8, "81-90": 4, "91-100": 2 }
+    CheckoutRequest:
+      type: object
+      required: [alumnoId, concepto, monto]
+      properties:
+        alumnoId: { type: integer }
+        concepto: { type: string }
+        monto: { type: number, exclusiveMinimum: 0 }
+    CheckoutResponse:
+      type: object
+      properties:
+        pagoId: { type: integer }
+        sessionId: { type: string }
+        url: { type: string, format: uri }
+    Pago:
+      type: object
+      properties:
+        id: { type: integer }
+        alumnoId: { type: integer }
+        concepto: { type: string }
+        monto: { type: number }
+        moneda: { type: string, example: usd }
+        estado: { type: string, enum: [pendiente, pagado, cancelado] }
+        fechaPago: { type: string, format: date-time, nullable: true }
+        alumno: { $ref: "#/components/schemas/Alumno" }
+

@@ -12,64 +12,11 @@ require("dotenv").config({
   quiet: true
 });
 
-const express = require("express");
-const cors = require("cors");
-const bodyParser = require("body-parser");
-
-const app = express();
-
-console.log(`Ambiente actual: ${NODE_ENV}`);
-
-// ==================== Middlewares globales ====================
-var corsOptions = {
-  origin: process.env.CORS_ORIGIN || "*"
-};
-app.use(cors(corsOptions));
-
-// ==================== Base de datos ====================
 const db = require("./app/models");
 const dbConfig = require("./app/config/db.config");
-const pagos = require("./app/controllers/pago.controller.js");
+const app = require("./app");
 
-// Stripe verifica la firma con los bytes exactos de la solicitud. Esta ruta
-// debe registrarse antes de cualquier parser JSON.
-app.post("/api/pagos/webhook", express.raw({ type: "application/json" }), pagos.webhook);
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-// ==================== Ruta de prueba ====================
-app.get("/", (req, res) => {
-  res.json({ message: "Portal Académico API - Backend funcionando correctamente." });
-});
-
-// ==================== Rutas ====================
-require("./app/routes/auth.routes")(app);
-require("./app/routes/usuario.routes")(app);
-require("./app/routes/gradoCarrera.routes")(app);
-require("./app/routes/catedratico.routes")(app);
-require("./app/routes/alumno.routes")(app);
-require("./app/routes/curso.routes")(app);
-require("./app/routes/asignacionCurso.routes")(app);
-require("./app/routes/horarioCatedratico.routes")(app);
-require("./app/routes/padreAlumno.routes")(app);
-require("./app/routes/nota.routes")(app);
-require("./app/routes/reporte.routes")(app);
-require("./app/routes/pago.routes")(app);
-
-// ==================== Manejo de errores no controlados ====================
-app.use((req, res) => {
-  res.status(404).send({ message: "Ruta no encontrada." });
-});
-
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  if (err.type === "entity.parse.failed") {
-    return res.status(400).send({ message: "El cuerpo JSON no es válido." });
-  }
-
-  console.error(err);
-  res.status(500).send({ message: "Ocurrió un error interno en el servidor." });
-});
+console.log(`Ambiente actual: ${NODE_ENV}`);
 
 // ==================== Levantar el servidor ====================
 const PORT = process.env.PORT || 8080;
@@ -118,8 +65,19 @@ function validateProductionConfiguration() {
   if (!process.env.JWT_SECRET) {
     missing.push("JWT_SECRET");
   }
-  if (!process.env.CORS_ORIGIN) {
-    missing.push("CORS_ORIGIN");
+  if (!process.env.CORS_ORIGIN || process.env.CORS_ORIGIN === "*") {
+    missing.push("CORS_ORIGIN (dominio explícito, no \"*\")");
+  }
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+    missing.push("JWT_SECRET (mínimo 32 caracteres)");
+  }
+  for (const key of ["APP_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]) {
+    if (!process.env[key]) {
+      missing.push(key);
+    }
+  }
+  if (process.env.APP_URL && !process.env.APP_URL.startsWith("https://")) {
+    missing.push("APP_URL (debe usar https://)");
   }
 
   if (missing.length > 0) {

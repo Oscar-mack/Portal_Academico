@@ -9,6 +9,9 @@ const Catedratico = db.catedraticos;
 const Alumno = db.alumnos;
 const PadreAlumno = db.padresAlumnos;
 
+const DUMMY_HASH = bcrypt.hashSync("no-es-una-contraseña-real", 10);
+const MIN_PASSWORD_LENGTH = 8;
+
 // RF: registro de usuarios del portal, con vínculo opcional a su perfil
 // académico según el rol (catedratico -> catedraticoId, alumno -> alumnoId,
 // padre -> alumnoIds[] para poder consultar las notas de sus hijos).
@@ -22,10 +25,15 @@ exports.signup = async (req, res) => {
       return res.status(400).send({ message: "username, email y password son requeridos." });
     }
 
+    if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+      await t.rollback();
+      return res.status(400).send({ message: `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.` });
+    }
+
     const usuario = await Usuario.create({
       username,
       email,
-      password: bcrypt.hashSync(password, 8),
+      password: bcrypt.hashSync(password, 10),
       rol: rol || ROLES.ALUMNO
     }, { transaction: t });
 
@@ -77,16 +85,13 @@ exports.signin = async (req, res) => {
 
     const usuario = await Usuario.findOne({ where: { username } });
 
-    if (!usuario) {
-      return res.status(404).send({ message: "Usuario no encontrado." });
+    // Misma respuesta para usuario inexistente o contraseña incorrecta (evita enumerar usuarios).
+    const passwordValida = bcrypt.compareSync(password, usuario ? usuario.password : DUMMY_HASH);
+    if (!usuario || !passwordValida) {
+      return res.status(401).send({ message: "Credenciales inválidas." });
     }
     if (!usuario.activo) {
       return res.status(403).send({ message: "El usuario se encuentra inactivo." });
-    }
-
-    const passwordValida = bcrypt.compareSync(password, usuario.password);
-    if (!passwordValida) {
-      return res.status(401).send({ message: "Contraseña incorrecta." });
     }
 
     const token = jwt.sign({ id: usuario.id, rol: usuario.rol }, config.secret, {

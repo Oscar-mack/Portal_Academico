@@ -2,6 +2,9 @@ const db = require("../models");
 const AsignacionCurso = db.asignacionesCurso;
 const Alumno = db.alumnos;
 const Curso = db.cursos;
+const { getAlumnoIdsVisibles } = require("../utils/access.js");
+const { seCruzan } = require("../utils/horarios.js");
+const HorarioCatedratico = db.horariosCatedratico;
 
 // RF-06 — Asignación de cursos a alumnos (RN-04: un alumno puede tener varios cursos)
 exports.create = async (req, res) => {
@@ -17,10 +20,34 @@ exports.create = async (req, res) => {
     const curso = await Curso.findByPk(cursoId);
     if (!curso) return res.status(404).send({ message: "El curso indicado no existe." });
 
+    // RN-01/RN-02: el curso debe pertenecer a la carrera/grado del alumno.
+    if (curso.gradoCarreraId !== alumno.gradoCarreraId) {
+      return res.status(400).send({ message: "El curso no pertenece al grado/carrera del alumno." });
+    }
+    if (!alumno.activo || !curso.activo) {
+      return res.status(400).send({ message: "El alumno o el curso se encuentra inactivo." });
+    }
+
+    const periodoEfectivo = periodo || "2026";
+
+    // Evita que el alumno quede inscrito en dos cursos con horarios que se cruzan.
+    const existentes = await AsignacionCurso.findAll({ where: { alumnoId, periodo: periodoEfectivo } });
+    if (existentes.length > 0) {
+      const [nuevos, actuales] = await Promise.all([
+        HorarioCatedratico.findAll({ where: { cursoId, periodo: periodoEfectivo } }),
+        HorarioCatedratico.findAll({
+          where: { cursoId: existentes.map(e => e.cursoId), periodo: periodoEfectivo }
+        })
+      ]);
+      if (nuevos.some(n => actuales.some(a => seCruzan(n, a)))) {
+        return res.status(409).send({ message: "El horario del curso se cruza con otro curso del alumno." });
+      }
+    }
+
     const asignacion = await AsignacionCurso.create({
       alumnoId,
       cursoId,
-      periodo: periodo || "2026"
+      periodo: periodoEfectivo
     });
     res.send(asignacion);
   } catch (error) {
@@ -36,6 +63,13 @@ exports.findAll = async (req, res) => {
     const where = {};
     if (req.query.alumnoId) where.alumnoId = req.query.alumnoId;
     if (req.query.cursoId) where.cursoId = req.query.cursoId;
+
+    const visibles = await getAlumnoIdsVisibles(req);
+    if (visibles) {
+      where.alumnoId = req.query.alumnoId
+        ? visibles.filter(id => id === Number(req.query.alumnoId))
+        : visibles;
+    }
 
     const asignaciones = await AsignacionCurso.findAll({
       where,
@@ -60,6 +94,10 @@ exports.findOne = async (req, res) => {
     });
     if (!asignacion) {
       return res.status(404).send({ message: `No se encontró la asignación con id=${req.params.id}.` });
+    }
+    const visibles = await getAlumnoIdsVisibles(req);
+    if (visibles && !visibles.includes(asignacion.alumnoId)) {
+      return res.status(403).send({ message: "No tienes acceso a esta asignación." });
     }
     res.send(asignacion);
   } catch (error) {

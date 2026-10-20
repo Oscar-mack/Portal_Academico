@@ -2,6 +2,7 @@ const db = require("../models");
 const HorarioCatedratico = db.horariosCatedratico;
 const Catedratico = db.catedraticos;
 const Curso = db.cursos;
+const { esHoraValida, aMinutos, seCruzan } = require("../utils/horarios.js");
 
 exports.create = async (req, res) => {
 	try {
@@ -16,7 +17,25 @@ exports.create = async (req, res) => {
 		if (!catedratico || !curso) {
 			return res.status(404).send({ message: "El catedrático o curso indicado no existe." });
 		}
-		const horario = await HorarioCatedratico.create({ catedraticoId, cursoId, dia, horaInicio, horaFin, periodo });
+		if (!esHoraValida(horaInicio) || !esHoraValida(horaFin)) {
+			return res.status(400).send({ message: "horaInicio y horaFin deben tener formato HH:MM (24 horas)." });
+		}
+		if (aMinutos(horaInicio) >= aMinutos(horaFin)) {
+			return res.status(400).send({ message: "horaInicio debe ser menor que horaFin." });
+		}
+
+		// Un catedrático no puede tener dos clases que se crucen en el mismo periodo.
+		const periodoEfectivo = periodo || "2026";
+		const delCatedratico = await HorarioCatedratico.findAll({
+			where: { catedraticoId, dia, periodo: periodoEfectivo }
+		});
+		if (delCatedratico.some(h => seCruzan(h, { dia, horaInicio, horaFin }))) {
+			return res.status(409).send({ message: "El horario se cruza con otro horario del catedrático." });
+		}
+
+		const horario = await HorarioCatedratico.create({
+			catedraticoId, cursoId, dia, horaInicio, horaFin, periodo: periodoEfectivo
+		});
 		res.status(201).send(horario);
 	} catch (error) {
 		res.status(500).send({ message: error.message || "Error al crear el horario." });

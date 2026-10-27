@@ -25,9 +25,22 @@ module.exports = (sequelize, DataTypes) => {
     activo: {
       type: DataTypes.BOOLEAN,
       defaultValue: true
+    },
+    // D1: campos para bloqueo de cuenta por intentos fallidos
+    intentosFallidos: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      allowNull: false
+    },
+    bloqueadoHasta: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    ultimoLogin: {
+      type: DataTypes.DATE,
+      allowNull: true
     }
   });
 
   return Usuario;
 };
-

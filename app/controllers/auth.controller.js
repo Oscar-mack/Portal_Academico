@@ -9,7 +9,9 @@ const Catedratico = db.catedraticos;
 const Alumno = db.alumnos;
 const PadreAlumno = db.padresAlumnos;
 
-const DUMMY_HASH = bcrypt.hashSync("no-es-una-contraseña-real", 10);
+// Hash dummy para evitar timing attacks: siempre se ejecuta bcrypt.compare aunque el
+// usuario no exista, haciendo la respuesta indistinguible por tiempo (RNF-01).
+const DUMMY_HASH = bcrypt.hashSync("no-es-una-contrasena-real", 10);
 const MIN_PASSWORD_LENGTH = 8;
 
 // RF: registro de usuarios del portal, con vínculo opcional a su perfil
@@ -27,7 +29,7 @@ exports.signup = async (req, res) => {
 
     if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
       await t.rollback();
-      return res.status(400).send({ message: `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.` });
+      return res.status(400).send({ message: `La contrasena debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.` });
     }
 
     const usuario = await Usuario.create({
@@ -41,7 +43,7 @@ exports.signup = async (req, res) => {
       const catedratico = await Catedratico.findByPk(catedraticoId, { transaction: t });
       if (!catedratico) {
         await t.rollback();
-        return res.status(404).send({ message: "El catedrático indicado no existe." });
+        return res.status(404).send({ message: "El catedratico indicado no existe." });
       }
       catedratico.usuarioId = usuario.id;
       await catedratico.save({ transaction: t });
@@ -72,10 +74,13 @@ exports.signup = async (req, res) => {
     res.send({ message: "Usuario registrado exitosamente!", id: usuario.id, rol: usuario.rol });
   } catch (error) {
     await t.rollback();
-    res.status(500).send({ message: error.message || "Ocurrió un error al registrar el usuario." });
+    res.status(500).send({ message: error.message || "Ocurrio un error al registrar el usuario." });
   }
 };
 
+// D1: Login atomico — el contador de intentos fallidos se actualiza dentro de una
+// transaccion con SELECT FOR UPDATE para evitar que solicitudes concurrentes eludan
+// el bloqueo de cuenta al leer el mismo valor de intentosFallidos antes de escribirlo.
 exports.signin = async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -83,41 +88,81 @@ exports.signin = async (req, res) => {
       return res.status(400).send({ message: "username y password son requeridos." });
     }
 
-    const usuario = await Usuario.findOne({ where: { username } });
+    // Primera lectura sin lock: obtener el hash para ejecutar bcrypt fuera de la tx
+    // (bcrypt es lento; no conviene mantener un lock de fila durante su ejecucion).
+    const encontrado = await Usuario.findOne({ where: { username } });
 
-    // Misma respuesta para usuario inexistente o contraseña incorrecta (evita enumerar usuarios).
-    const passwordValida = bcrypt.compareSync(password, usuario ? usuario.password : DUMMY_HASH);
-    if (!usuario || !passwordValida) {
-      return res.status(401).send({ message: "Credenciales inválidas." });
+    // Siempre ejecutar bcrypt.compare para igualar el tiempo de respuesta
+    // independientemente de si el usuario existe o no.
+    const hashAComparar = encontrado ? encontrado.password : DUMMY_HASH;
+    const passwordValida = await bcrypt.compare(String(password), hashAComparar);
+
+    if (!encontrado) {
+      return res.status(401).send({ message: "Credenciales invalidas." });
     }
-    if (!usuario.activo) {
-      return res.status(403).send({ message: "El usuario se encuentra inactivo." });
-    }
 
-    const token = jwt.sign({ id: usuario.id, rol: usuario.rol }, config.secret, {
-      expiresIn: config.expiresIn
-    });
+    // Segunda lectura con lock para serializar las actualizaciones de estado de cuenta.
+    return await db.sequelize.transaction(async (t) => {
+      const usuario = await Usuario.findByPk(encontrado.id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE
+      });
 
-    res.status(200).send({
-      message: "Login exitoso",
-      token,
-      usuario: {
+      // Re-verificar activo dentro del lock por si cambio concurrentemente.
+      if (!usuario.activo) {
+        return res.status(403).send({ message: "El usuario se encuentra inactivo." });
+      }
+
+      if (!passwordValida) {
+        // D1: el incremento se hace dentro del lock; dos intentos simultaneos no
+        // podran leer el mismo valor y ambos escribir +1 al mismo contador.
+        const nuevosIntentos = (usuario.intentosFallidos || 0) + 1;
+        await usuario.update(
+          {
+            intentosFallidos: nuevosIntentos,
+            bloqueadoHasta: nuevosIntentos >= 5
+              ? new Date(Date.now() + 15 * 60 * 1000)
+              : usuario.bloqueadoHasta
+          },
+          { transaction: t }
+        );
+        return res.status(401).send({ message: "Credenciales invalidas." });
+      }
+
+      // Verificar bloqueo temporal despues de confirmar que la contrasena es valida
+      // (evita revelar si la cuenta esta bloqueada antes de verificar credenciales).
+      if (usuario.bloqueadoHasta && usuario.bloqueadoHasta > new Date()) {
+        return res.status(429).send({ message: "Cuenta temporalmente bloqueada. Intenta mas tarde." });
+      }
+
+      // Login exitoso: limpiar contador.
+      await usuario.update(
+        { intentosFallidos: 0, bloqueadoHasta: null, ultimoLogin: new Date() },
+        { transaction: t }
+      );
+
+      const token = jwt.sign({ id: usuario.id, rol: usuario.rol }, config.secret, {
+        expiresIn: config.expiresIn
+      });
+
+      return res.status(200).send({
+        message: "Login exitoso",
+        token,
+        usuario: { id: usuario.id, rol: usuario.rol },
         id: usuario.id,
-        rol: usuario.rol
-      },
-      id: usuario.id,
-      username: usuario.username,
-      email: usuario.email,
-      rol: usuario.rol,
-      accessToken: token,
-      expiresIn: config.expiresIn
+        username: usuario.username,
+        email: usuario.email,
+        rol: usuario.rol,
+        accessToken: token,
+        expiresIn: config.expiresIn
+      });
     });
   } catch (error) {
-    res.status(500).send({ message: error.message || "Ocurrió un error al iniciar sesión." });
+    res.status(500).send({ message: error.message || "Ocurrio un error al iniciar sesion." });
   }
 };
 
-// Devuelve el perfil del usuario autenticado (útil para el frontend)
+// Devuelve el perfil del usuario autenticado (util para el frontend)
 exports.perfil = async (req, res) => {
   try {
     const usuario = await Usuario.findByPk(req.userId, {
@@ -135,5 +180,3 @@ exports.perfil = async (req, res) => {
     res.status(500).send({ message: "Error al obtener el perfil." });
   }
 };
-
-

@@ -11,7 +11,10 @@ const PadreAlumno = db.padresAlumnos;
 const AsignacionCurso = db.asignacionesCurso;
 const HorarioCatedratico = db.horariosCatedratico;
 
-// RF-09 — Reporte de notas por catedrático (Administrador, o el propio catedrático)
+// B3: Umbral importado del modelo — unica fuente de verdad.
+const NOTA_MINIMA_APROBACION = Nota.NOTA_MINIMA_APROBACION;
+
+// RF-09 — Reporte de notas por catedratico (Administrador, o el propio catedratico)
 exports.notasPorCatedratico = async (req, res) => {
   try {
     const catedraticoId = req.params.catedraticoId;
@@ -25,7 +28,7 @@ exports.notasPorCatedratico = async (req, res) => {
 
     const catedratico = await Catedratico.findByPk(catedraticoId);
     if (!catedratico) {
-      return res.status(404).send({ message: "Catedrático no encontrado." });
+      return res.status(404).send({ message: "Catedratico no encontrado." });
     }
 
     const notas = await Nota.findAll({
@@ -56,7 +59,8 @@ exports.notasPorCatedratico = async (req, res) => {
   }
 };
 
-// RF-12 — Indicadores académicos: alumnos aprobados/reprobados por rango de nota (Administrador)
+// RF-12 — Indicadores academicos: alumnos aprobados/reprobados por rango de nota (Administrador)
+// B3: Se usa NOTA_MINIMA_APROBACION importada del modelo en lugar del literal 61.
 exports.indicadores = async (req, res) => {
   try {
     const where = {};
@@ -73,13 +77,14 @@ exports.indicadores = async (req, res) => {
     const notas = await Nota.findAll({ where });
 
     const totalNotas = notas.length;
-    const aprobados = notas.filter(n => n.estado === "aprobado").length;
-    const reprobados = notas.filter(n => n.estado === "reprobado").length;
+    // B3: Usar el umbral del modelo en lugar de 61 literal.
+    const aprobados = notas.filter(n => n.valor >= NOTA_MINIMA_APROBACION).length;
+    const reprobados = notas.filter(n => n.valor < NOTA_MINIMA_APROBACION).length;
 
-    // Distribución por rangos (RF-12 / RN-06 / RN-07)
+    // Distribucion por rangos — el primer rango se ajusta al umbral dinamico.
     const rangos = {
-      "0-60 (Reprobado)": notas.filter(n => n.valor <= 60).length,
-      "61-70": notas.filter(n => n.valor >= 61 && n.valor <= 70).length,
+      [`0-${NOTA_MINIMA_APROBACION - 1} (Reprobado)`]: notas.filter(n => n.valor < NOTA_MINIMA_APROBACION).length,
+      [`${NOTA_MINIMA_APROBACION}-70`]: notas.filter(n => n.valor >= NOTA_MINIMA_APROBACION && n.valor <= 70).length,
       "71-80": notas.filter(n => n.valor >= 71 && n.valor <= 80).length,
       "81-90": notas.filter(n => n.valor >= 81 && n.valor <= 90).length,
       "91-100": notas.filter(n => n.valor >= 91 && n.valor <= 100).length
@@ -93,14 +98,15 @@ exports.indicadores = async (req, res) => {
       aprobados,
       reprobados,
       porcentajeAprobacion: totalNotas > 0 ? Number(((aprobados / totalNotas) * 100).toFixed(2)) : 0,
-      distribucionPorRango: rangos
+      distribucionPorRango: rangos,
+      umbralAprobacion: NOTA_MINIMA_APROBACION
     });
   } catch (error) {
     res.status(500).send({ message: "Error al generar los indicadores." });
   }
 };
 
-// RF-10 / RF-11 — Boleta de notas en PDF (Admin, catedrático del alumno, el propio alumno, o su padre/tutor)
+// RF-10 / RF-11 — Boleta de notas en PDF (Admin, catedratico del alumno, el propio alumno, o su padre/tutor)
 exports.boletaPDF = async (req, res) => {
   try {
     const alumnoId = req.params.alumnoId;
@@ -119,23 +125,20 @@ exports.boletaPDF = async (req, res) => {
     } else if (req.userRole === ROLES.CATEDRATICO) {
       const catedratico = await Catedratico.findOne({ where: { usuarioId: req.userId } });
       if (!catedratico) {
-        return res.status(403).send({ message: "No tienes un perfil de catedrático asociado." });
+        return res.status(403).send({ message: "No tienes un perfil de catedratico asociado." });
       }
-
       const horarios = await HorarioCatedratico.findAll({
         where: { catedraticoId: catedratico.id },
         attributes: ["cursoId"]
       });
-      const cursosImpartidos = horarios.map(horario => horario.cursoId);
+      const cursosImpartidos = horarios.map(h => h.cursoId);
       const imparteAlAlumno = cursosImpartidos.length > 0 && await AsignacionCurso.findOne({
         where: { alumnoId, cursoId: cursosImpartidos }
       });
-
       if (!imparteAlAlumno) {
         return res.status(403).send({ message: "Solo puedes consultar boletas de alumnos inscritos en tus cursos." });
       }
     }
-    // El administrador puede consultar cualquier boleta.
 
     const alumno = await Alumno.findByPk(alumnoId, {
       include: [{ model: GradoCarrera, as: "gradoCarrera" }]
@@ -144,11 +147,11 @@ exports.boletaPDF = async (req, res) => {
       return res.status(404).send({ message: "Alumno no encontrado." });
     }
 
-    const where = { alumnoId };
-    if (periodo) where.periodo = periodo;
+    const filtro = { alumnoId };
+    if (periodo) filtro.periodo = periodo;
 
     const notas = await Nota.findAll({
-      where,
+      where: filtro,
       include: [{ model: Curso, as: "curso" }],
       order: [["cursoId", "ASC"]]
     });

@@ -163,9 +163,13 @@ específicos mediante los middlewares de `app/middlewares/authJwt.js`:
 
 ### Migraciones de base de datos
 
-Las migraciones 002 y 003 están preparadas en
+Las migraciones 002, 003 y 004 están preparadas en
 [`scripts/migrations/`](./scripts/migrations/), junto con sus scripts de
-reversión. **No se han ejecutado en Neon ni en producción.** Antes de aplicarlas,
+reversión. Orden de aplicación: 002 → 003 → 004; reversión: 004 → 003 → 002.
+La 004 añade `nota.publicadaEn` (idempotente); las notas existentes quedan sin
+publicar (`NULL`) y no son visibles para alumnos ni padres hasta que un usuario
+autorizado las publique. Su reversión se bloquea si hay notas publicadas.
+**No se han ejecutado en producción.** Antes de aplicarlas,
 revisa los SQL completos y la consulta de preflight de montos en la migración
 003; respalda la base y prueba primero en una copia PostgreSQL. La reversión
 003 bloquea si ya existen cargos, eventos, pagos asociados o pagos fallidos;
@@ -175,7 +179,7 @@ calificación mediante triggers PostgreSQL; estas restricciones no se ejercitan
 con la suite SQLite y deben verificarse en una instancia PostgreSQL aislada.
 
 `GET /health` comprueba que el proceso responde. `GET /ready` valida la conexión
-y el esquema requerido por las migraciones 002 y 003, incluidos sus triggers;
+y el esquema requerido por las migraciones 002 a 004, incluidos sus triggers;
 responde `503` si faltan tablas, columnas o triggers. En Render, configura un
 health check en `/ready` para que una instancia con una migración incompleta no
 reciba tráfico.

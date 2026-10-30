@@ -4,6 +4,7 @@ services:
     name: portal-academico-backend
     buildCommand: npm ci
     startCommand: npm start
+    healthCheckPath: /ready
     envVars:
       - key: NODE_ENV
         value: production

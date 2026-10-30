@@ -261,6 +261,37 @@ test("alumnos y padres solo reciben notas publicadas", async () => {
   assert.deepEqual(padreDespues.body.map(registro => registro.id), [nota.id]);
 });
 
+test("modificar una nota publicada exige motivo de al menos 10 caracteres", async () => {
+  const nota = await db.notas.create({
+    alumnoId: ctx.al1,
+    cursoId: ctx.c1,
+    catedraticoId: ctx.cat1,
+    valor: 60,
+    periodo: "2026-motivo"
+  });
+  const put = () => request(app).put(`/api/notas/${nota.id}`)
+    .set(auth(ctx.tokens.cat1));
+
+  // Sin publicar: no se exige motivo.
+  assert.equal((await put().send({ valor: 61 })).status, 200);
+  assert.equal((await request(app).patch(`/api/notas/${nota.id}/publicar`)
+    .set(auth(ctx.tokens.cat1))).status, 200);
+
+  for (const motivo of [undefined, "", "   ", "corto"]) {
+    assert.equal((await put().send({ valor: 70, motivo })).status, 400);
+  }
+  assert.equal(Number((await db.notas.findByPk(nota.id)).valor), 61);
+  assert.equal(await db.auditoriaNotas.count({ where: { notaId: nota.id } }), 1);
+
+  const ok = await put().send({ valor: 70, motivo: "Error de captura en acta" });
+  assert.equal(ok.status, 200);
+  const auditorias = await db.auditoriaNotas.findAll({ where: { notaId: nota.id }, order: [["id", "ASC"]] });
+  assert.equal(auditorias.length, 2);
+  assert.equal(Number(auditorias[1].valorAnterior), 61);
+  assert.equal(Number(auditorias[1].valorNuevo), 70);
+  assert.equal(auditorias[1].motivo, "Error de captura en acta");
+});
+
 test("períodos y evaluaciones calculan notas finales sin alterar períodos históricos", async () => {
   const historica = await db.notas.create({
     alumnoId: ctx.al1,
@@ -345,6 +376,20 @@ test("períodos y evaluaciones calculan notas finales sin alterar períodos hist
     .set(auth(ctx.tokens.admin)).send({ valor: 99 })).status, 409);
   assert.equal((await request(app).put(`/api/evaluaciones/${examen.body.id}`)
     .set(auth(ctx.tokens.admin)).send({ nombre: "Examen editado" })).status, 409);
+
+  for (const motivoInvalido of [undefined, "", "   corto   ", "123456789"]) {
+    const rechazada = await registrar(examen.body.id, 51, motivoInvalido);
+    assert.equal(rechazada.status, 400, JSON.stringify(rechazada.body));
+  }
+  const intacta = await db.notas.findByPk(finalResponse.body.notaFinal.id);
+  assert.equal(Number(intacta.valor), 85);
+  assert.ok(intacta.publicadaEn);
+  assert.equal(Number((await db.calificacionesEvaluacion.findOne({
+    where: { evaluacionId: examen.body.id, alumnoId: ctx.al1 }
+  })).valor), 50);
+  assert.equal(await db.auditoriaNotas.count({ where: { notaId: intacta.id } }), 0);
+  // Reenviar el mismo valor no modifica la nota y no exige motivo.
+  assert.equal((await registrar(examen.body.id, 50)).status, 200);
 
   const corregida = await registrar(examen.body.id, 51, "Corrección de evaluación");
   assert.equal(corregida.body.notaFinal.valor, 86);

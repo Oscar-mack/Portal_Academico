@@ -244,6 +244,13 @@ exports.update = async (req, res) => {
         return res.status(409).send({ message: "El período está cerrado; solo un administrador puede modificar la nota." });
       }
     }
+    const motivo = typeof req.body.motivo === "string" ? req.body.motivo.trim() : "";
+    if (nuevoValor !== undefined && nuevoValor !== valorAnterior && nota.publicadaEn && motivo.length < 10) {
+      await t.rollback();
+      return res.status(400).send({
+        message: "Modificar una nota publicada requiere un motivo de al menos 10 caracteres."
+      });
+    }
     if (nuevoValor !== undefined) nota.valor = nuevoValor;
     if (nuevoValor !== undefined && nuevoValor !== valorAnterior) {
       await AuditoriaNota.create({
@@ -251,7 +258,7 @@ exports.update = async (req, res) => {
         usuarioId: req.userId,
         valorAnterior,
         valorNuevo: nuevoValor,
-        motivo: req.body.motivo || null
+        motivo: motivo || null
       }, { transaction: t });
       if (nota.periodoAcademicoId) nota.publicadaEn = null;
     }

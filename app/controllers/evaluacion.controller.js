@@ -44,6 +44,10 @@ async function validarPeriodo(periodoAcademicoId, req, transaction) {
   return { periodo };
 }
 
+const MOTIVO_MINIMO = 10;
+const MOTIVO_REQUERIDO_MSG = `Modificar una nota publicada requiere un motivo de al menos ${MOTIVO_MINIMO} caracteres.`;
+const motivoValido = motivo => typeof motivo === "string" && motivo.trim().length >= MOTIVO_MINIMO;
+
 async function consolidarNotaFinal({ evaluacion, alumnoId, usuarioId, motivo, transaction }) {
   const evaluaciones = await Evaluacion.findAll({
     where: {
@@ -90,6 +94,11 @@ async function consolidarNotaFinal({ evaluacion, alumnoId, usuarioId, motivo, tr
   }
 
   if (aCentavos(nota.valor) !== aCentavos(valor)) {
+    if (nota.publicadaEn && !motivoValido(motivo)) {
+      const error = new Error(MOTIVO_REQUERIDO_MSG);
+      error.status = 400;
+      throw error;
+    }
     await AuditoriaNota.create({
       notaId: nota.id,
       usuarioId,
@@ -404,7 +413,7 @@ exports.registrarCalificacion = async (req, res) => {
     res.send({ calificacion, notaFinal: consolidacion.nota || null, consolidada: consolidacion.consolidada });
   } catch (error) {
     await transaction.rollback();
-    const status = error.name === "SequelizeUniqueConstraintError" ? 409 : 500;
+    const status = error.status || (error.name === "SequelizeUniqueConstraintError" ? 409 : 500);
     res.status(status).send({ message: error.message || "Error al registrar la calificación." });
   }
 };

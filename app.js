@@ -3,6 +3,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
+const { corsOptions } = require("./app/config/cors.config");
 const db = require("./app/models");
 const pagos = require("./app/controllers/pago.controller.js");
 
@@ -10,7 +11,7 @@ const app = express();
 
 app.disable("x-powered-by");
 app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
+app.use(cors(corsOptions));
 
 // Stripe verifica la firma con los bytes exactos de la solicitud. Esta ruta
 // debe registrarse antes de cualquier parser JSON.

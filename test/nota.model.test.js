@@ -40,13 +40,15 @@ test("publicadaEn inicia en null (B5: nota no publicada por defecto)", () => {
 
 test("transiciones de estado de pago: pagado es terminal (C2)", () => {
   const TRANSICIONES_VALIDAS = {
-    pendiente: ["pagado", "cancelado"],
+    pendiente: ["pagado", "fallido", "cancelado"],
+    fallido: [],
     cancelado: [],
     pagado: []
   };
   const puede = (desde, hacia) => (TRANSICIONES_VALIDAS[desde] ?? []).includes(hacia);
 
   assert.ok(puede("pendiente", "pagado"));
+  assert.ok(puede("pendiente", "fallido"));
   assert.ok(puede("pendiente", "cancelado"));
   assert.equal(puede("pagado", "cancelado"), false);
   assert.equal(puede("pagado", "pendiente"), false);

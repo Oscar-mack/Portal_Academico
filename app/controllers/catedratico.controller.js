@@ -1,5 +1,6 @@
 const db = require("../models");
 const Catedratico = db.catedraticos;
+const ROLES = require("../config/roles.js");
 
 // RF-01 — Gestión de catedráticos (CRUD completo, solo Administrador)
 exports.create = async (req, res) => {
@@ -22,7 +23,9 @@ exports.create = async (req, res) => {
 
 exports.findAll = async (req, res) => {
   try {
-    const catedraticos = await Catedratico.findAll();
+    const where = {};
+    if (req.userRole !== ROLES.ADMIN || req.query.incluirInactivos !== "true") where.activo = true;
+    const catedraticos = await Catedratico.findAll({ where });
     res.send(catedraticos);
   } catch (error) {
     res.status(500).send({ message: "Error al obtener los catedráticos." });
@@ -56,9 +59,9 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    const num = await Catedratico.destroy({ where: { id: req.params.id } });
+    const [num] = await Catedratico.update({ activo: false }, { where: { id: req.params.id } });
     if (num === 1) {
-      res.send({ message: "Catedrático eliminado exitosamente." });
+      res.send({ message: "Catedrático desactivado; su historial académico se conserva." });
     } else {
       res.status(404).send({ message: `No se pudo eliminar el catedrático con id=${req.params.id}.` });
     }

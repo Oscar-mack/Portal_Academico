@@ -1,6 +1,7 @@
 const db = require("../models");
 const Curso = db.cursos;
 const GradoCarrera = db.gradosCarreras;
+const ROLES = require("../config/roles.js");
 
 // RF-05 — Gestión de cursos (RN-02: un curso debe pertenecer a un grado/carrera)
 exports.create = async (req, res) => {
@@ -24,7 +25,10 @@ exports.create = async (req, res) => {
 
 exports.findAll = async (req, res) => {
   try {
+    const where = {};
+    if (req.userRole !== ROLES.ADMIN || req.query.incluirInactivos !== "true") where.activo = true;
     const cursos = await Curso.findAll({
+      where,
       include: [{ model: GradoCarrera, as: "gradoCarrera" }]
     });
     res.send(cursos);
@@ -62,9 +66,9 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    const num = await Curso.destroy({ where: { id: req.params.id } });
+    const [num] = await Curso.update({ activo: false }, { where: { id: req.params.id } });
     if (num === 1) {
-      res.send({ message: "Curso eliminado exitosamente." });
+      res.send({ message: "Curso desactivado; sus asignaciones y notas históricas se conservan." });
     } else {
       res.status(404).send({ message: `No se pudo eliminar el curso con id=${req.params.id}.` });
     }
@@ -72,4 +76,3 @@ exports.delete = async (req, res) => {
     res.status(500).send({ message: "Error al eliminar el curso." });
   }
 };
-

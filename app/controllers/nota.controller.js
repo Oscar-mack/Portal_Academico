@@ -1,8 +1,10 @@
 const db = require("../models");
 const ROLES = require("../config/roles.js");
 const { Op } = require("sequelize");
+const { validarNotaCompleta } = require("./evaluacion.controller.js");
 
 const Nota = db.notas;
+const AuditoriaNota = db.auditoriaNotas;
 const Alumno = db.alumnos;
 const Curso = db.cursos;
 const Catedratico = db.catedraticos;
@@ -89,6 +91,7 @@ exports.findAll = async (req, res) => {
     const where = {};
     if (req.query.cursoId) where.cursoId = req.query.cursoId;
     if (req.query.periodo) where.periodo = req.query.periodo;
+    if (req.query.periodoAcademicoId) where.periodoAcademicoId = req.query.periodoAcademicoId;
 
     if (req.userRole === ROLES.ADMIN) {
       if (req.query.alumnoId) where.alumnoId = req.query.alumnoId;
@@ -108,11 +111,12 @@ exports.findAll = async (req, res) => {
     } else if (req.userRole === ROLES.PADRE) {
       const vinculos = await PadreAlumno.findAll({ where: { usuarioId: req.userId } });
       const alumnoIds = vinculos.map(v => v.alumnoId);
+      if (req.query.alumnoId && !alumnoIds.includes(Number(req.query.alumnoId))) {
+        return res.status(403).send({ message: "No tienes acceso a las notas de este alumno." });
+      }
       if (alumnoIds.length === 0) return res.send([]);
       // RN-08: solo puede ver las notas de sus hijos asociados.
-      where.alumnoId = req.query.alumnoId && alumnoIds.includes(Number(req.query.alumnoId))
-        ? req.query.alumnoId
-        : alumnoIds;
+      where.alumnoId = req.query.alumnoId ? Number(req.query.alumnoId) : alumnoIds;
       // B1: Tutor solo ve notas publicadas.
       where.publicadaEn = { [Op.ne]: null };
     }
@@ -176,6 +180,28 @@ exports.findOne = async (req, res) => {
   }
 };
 
+exports.historial = async (req, res) => {
+  try {
+    const nota = await Nota.findByPk(req.params.id);
+    if (!nota) return res.status(404).send({ message: "Nota no encontrada." });
+    if (req.userRole === ROLES.CATEDRATICO) {
+      const catedratico = await Catedratico.findOne({ where: { usuarioId: req.userId } });
+      if (!catedratico || catedratico.id !== nota.catedraticoId) {
+        return res.status(403).send({ message: "No tienes acceso al historial de esta nota." });
+      }
+    } else if (req.userRole !== ROLES.ADMIN) {
+      return res.status(403).send({ message: "El historial de cambios solo está disponible para administración y el catedrático responsable." });
+    }
+    const historial = await AuditoriaNota.findAll({
+      where: { notaId: nota.id },
+      order: [["createdAt", "ASC"]]
+    });
+    res.send(historial);
+  } catch (error) {
+    res.status(500).send({ message: error.message || "Error al consultar el historial de la nota." });
+  }
+};
+
 // RN-05 — Solo el catedratico responsable puede actualizar la nota que registro.
 // B2: Todos los checks (acceso, rango) se re-verifican dentro de la transaccion con lock
 //     para evitar condiciones de carrera entre un update y un cierre concurrente.
@@ -199,12 +225,36 @@ exports.update = async (req, res) => {
     }
 
     const nuevoValor = req.body.valor;
+    if (nuevoValor !== undefined && nota.periodoAcademicoId) {
+      await t.rollback();
+      return res.status(409).send({
+        message: "La nota final se calcula desde las evaluaciones; modifica las calificaciones individuales."
+      });
+    }
     if (nuevoValor !== undefined && (typeof nuevoValor !== "number" || !Number.isFinite(nuevoValor) || nuevoValor < 0 || nuevoValor > 100)) {
       await t.rollback();
       return res.status(400).send({ message: "El valor de la nota debe ser un numero entre 0 y 100." });
     }
 
+    const valorAnterior = Number(nota.valor);
+    if (nuevoValor !== undefined && nota.periodoAcademicoId) {
+      const periodo = await db.periodosAcademicos.findByPk(nota.periodoAcademicoId, { transaction: t });
+      if (periodo.estado !== "abierto" && req.userRole !== ROLES.ADMIN) {
+        await t.rollback();
+        return res.status(409).send({ message: "El período está cerrado; solo un administrador puede modificar la nota." });
+      }
+    }
     if (nuevoValor !== undefined) nota.valor = nuevoValor;
+    if (nuevoValor !== undefined && nuevoValor !== valorAnterior) {
+      await AuditoriaNota.create({
+        notaId: nota.id,
+        usuarioId: req.userId,
+        valorAnterior,
+        valorNuevo: nuevoValor,
+        motivo: req.body.motivo || null
+      }, { transaction: t });
+      if (nota.periodoAcademicoId) nota.publicadaEn = null;
+    }
     // El hook beforeValidate recalcula nota.estado automaticamente.
     await nota.save({ transaction: t });
 
@@ -232,6 +282,18 @@ exports.publish = async (req, res) => {
       return res.status(409).send({ message: "La nota ya fue publicada." });
     }
 
+    if (nota.periodoAcademicoId) {
+      const periodo = await db.periodosAcademicos.findByPk(nota.periodoAcademicoId, { transaction: t });
+      if (periodo.estado !== "abierto" && req.userRole !== ROLES.ADMIN) {
+        await t.rollback();
+        return res.status(409).send({ message: "El período está cerrado; solo un administrador puede publicar la nota." });
+      }
+      if (!(await validarNotaCompleta(nota, t))) {
+        await t.rollback();
+        return res.status(409).send({ message: "No se puede publicar una nota con evaluaciones o calificaciones incompletas." });
+      }
+    }
+
     // Solo el catedratico que registro la nota o el admin puede publicarla.
     if (req.userRole === ROLES.CATEDRATICO) {
       const catedratico = await Catedratico.findOne({ where: { usuarioId: req.userId }, transaction: t });
@@ -256,6 +318,10 @@ exports.delete = async (req, res) => {
     const nota = await Nota.findByPk(req.params.id);
     if (!nota) {
       return res.status(404).send({ message: `No se encontro la nota con id=${req.params.id}.` });
+    }
+    if (nota.periodoAcademicoId || nota.publicadaEn ||
+        await AuditoriaNota.count({ where: { notaId: nota.id } }) > 0) {
+      return res.status(409).send({ message: "La nota tiene historial o pertenece a un período académico y no puede eliminarse." });
     }
     await nota.destroy();
     res.send({ message: "Nota eliminada exitosamente." });

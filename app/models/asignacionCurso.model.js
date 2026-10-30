@@ -17,6 +17,10 @@ module.exports = (sequelize, DataTypes) => {
 			type: DataTypes.STRING,
 			allowNull: false,
 			defaultValue: "2026"
+		},
+		periodoAcademicoId: {
+			type: DataTypes.INTEGER,
+			allowNull: true
 		}
 	}, {
 		indexes: [

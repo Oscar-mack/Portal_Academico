@@ -9,6 +9,63 @@ const pagos = require("./app/controllers/pago.controller.js");
 
 const app = express();
 
+const REQUIRED_SCHEMA = {
+  ciclos_academicos: ["id", "nombre", "fechaInicio", "fechaFin", "estado"],
+  periodos_academicos: ["id", "cicloAcademicoId", "nombre", "tipo", "fechaInicio", "fechaFin", "estado"],
+  asignacion_cursos: ["periodoAcademicoId"],
+  horario_catedraticos: ["periodoAcademicoId"],
+  nota: ["periodoAcademicoId", "publicadaEn"],
+  evaluaciones: ["cursoId", "catedraticoId", "periodoAcademicoId", "puntajeMaximo"],
+  calificaciones_evaluacion: ["evaluacionId", "alumnoId", "valor"],
+  auditoria_notas: ["notaId", "usuarioId", "valorAnterior", "valorNuevo"],
+  cargos: ["alumnoId", "montoOriginal", "moneda"],
+  pagos: ["cargoId", "stripePaymentIntentId", "metodoPago"],
+  eventos_stripe: ["stripeEventId", "tipo", "pagoId"],
+  requisitos_solvencia_documentos: ["tipoDocumento", "requiere_solvencia"]
+};
+
+const REQUIRED_TRIGGERS = [
+  "evaluaciones_maximo_biu",
+  "calificaciones_evaluacion_validar_biu",
+  "evaluaciones_maximo_calificaciones_bu",
+  "auditoria_notas_inmutable_bud",
+  "pagos_validar_cargo_biu",
+  "cargos_proteger_pagos_bu",
+  "cargos_no_delete_con_historial_bd"
+];
+
+async function findMissingSchema() {
+  const queryInterface = db.sequelize.getQueryInterface();
+  const tables = await queryInterface.showAllTables();
+  const existingTables = new Set(tables.map(table =>
+    typeof table === "string" ? table : table.tableName
+  ));
+  const missing = [];
+
+  for (const [table, columns] of Object.entries(REQUIRED_SCHEMA)) {
+    if (!existingTables.has(table)) {
+      missing.push(`table:${table}`);
+      continue;
+    }
+    const tableDescription = await queryInterface.describeTable(table);
+    for (const column of columns) {
+      if (!Object.hasOwn(tableDescription, column)) missing.push(`column:${table}.${column}`);
+    }
+  }
+
+  if (db.sequelize.getDialect() === "postgres") {
+    const [triggers] = await db.sequelize.query(
+      "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal"
+    );
+    const existingTriggers = new Set(triggers.map(trigger => trigger.tgname));
+    for (const trigger of REQUIRED_TRIGGERS) {
+      if (!existingTriggers.has(trigger)) missing.push(`trigger:${trigger}`);
+    }
+  }
+
+  return missing;
+}
+
 app.disable("x-powered-by");
 app.use(helmet());
 app.use(cors(corsOptions));
@@ -39,9 +96,25 @@ app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.get("/ready", async (req, res) => {
   try {
     await db.sequelize.query("SELECT 1");
-    res.json({ status: "ready" });
+    const missingSchema = await findMissingSchema();
+    if (missingSchema.length > 0) {
+      return res.status(503).json({
+        status: "unavailable",
+        checks: { database: "ok", schema: "incomplete" },
+        missingSchema
+      });
+    }
+    return res.json({ status: "ready", checks: { database: "ok", schema: "ok" } });
   } catch (error) {
-    res.status(503).json({ status: "unavailable" });
+    console.error("Readiness check failed:", {
+      name: error.name,
+      message: error.message,
+      code: error.parent?.code || error.original?.code || error.code
+    });
+    return res.status(503).json({
+      status: "unavailable",
+      checks: { database: "unavailable", schema: "unknown" }
+    });
   }
 });
 
@@ -57,6 +130,12 @@ require("./app/routes/padreAlumno.routes")(app);
 require("./app/routes/nota.routes")(app);
 require("./app/routes/reporte.routes")(app);
 require("./app/routes/pago.routes")(app);
+require("./app/routes/cicloAcademico.routes")(app);
+require("./app/routes/periodoAcademico.routes")(app);
+require("./app/routes/evaluacion.routes")(app);
+require("./app/routes/cargo.routes")(app);
+require("./app/routes/dashboard.routes")(app);
+require("./app/routes/requisitoSolvencia.routes")(app);
 
 app.use((req, res) => {
   res.status(404).send({ message: "Ruta no encontrada." });

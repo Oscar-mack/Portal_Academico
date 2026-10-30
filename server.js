@@ -103,8 +103,12 @@ async function startServer() {
   }
 
   try {
-    await db.sequelize.sync();
-    console.log("Base de datos sincronizada correctamente.");
+    if (isProduction) {
+      console.log("Sincronización automática omitida en producción; aplica las migraciones versionadas revisadas antes de usar las nuevas rutas.");
+    } else {
+      await db.sequelize.sync();
+      console.log("Base de datos sincronizada correctamente.");
+    }
 
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}.`);
@@ -116,6 +120,5 @@ async function startServer() {
 }
 
 startServer();
-
 
 

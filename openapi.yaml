@@ -29,6 +29,11 @@ tags:
   - name: Notas
   - name: Reportes
   - name: Pagos
+  - name: Ciclos/Períodos
+  - name: Evaluaciones
+  - name: Cargos
+  - name: Dashboard
+  - name: Requisitos de solvencia
 paths:
   /health:
     get:
@@ -504,14 +509,23 @@ paths:
   /api/horarios-catedratico:
     get:
       tags: [Horarios]
-      summary: Listar horarios (cualquier rol)
+      summary: Listar horarios visibles según el rol
+      description: El administrador puede listar todos; el catedrático solo sus horarios; alumno y padre solo horarios de cursos inscritos. El padre puede indicar alumnoId para elegir un hijo vinculado.
       parameters:
         - name: catedraticoId
           in: query
+          description: Filtro administrativo; otros roles quedan restringidos a sus relaciones autorizadas.
           schema: { type: integer }
         - name: cursoId
           in: query
           schema: { type: integer }
+        - name: alumnoId
+          in: query
+          description: Padre/tutor; debe ser un alumno vinculado a su cuenta.
+          schema: { type: integer }
+        - name: periodo
+          in: query
+          schema: { type: string, example: "2026" }
       responses:
         "200":
           description: Lista
@@ -520,6 +534,7 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Horario" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       tags: [Horarios]
       summary: Asignar curso y horario a un catedrático (admin)
@@ -545,13 +560,14 @@ paths:
       - $ref: "#/components/parameters/Id"
     get:
       tags: [Horarios]
-      summary: Obtener horario (cualquier rol)
+      summary: Obtener horario si está relacionado con el usuario
       responses:
         "200":
           description: Horario
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Horario" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [Horarios]
@@ -610,6 +626,19 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: Vínculo ya existente
+  /api/padres-alumnos/mis-alumnos:
+    get:
+      tags: [Padres/Tutores]
+      summary: Consultar hijos o alumnos vinculados (padre/tutor)
+      responses:
+        "200":
+          description: Alumnos vinculados únicamente a la cuenta autenticada
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AlumnoVinculado" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /api/padres-alumnos/{id}:
     delete:
       tags: [Padres/Tutores]
@@ -625,8 +654,9 @@ paths:
       tags: [Notas]
       summary: Consultar notas según el rol
       description: |
-        admin: todas (filtros opcionales). catedrático: las que registró. alumno: las propias.
-        padre: las de sus hijos vinculados.
+        admin: todas (filtros opcionales). catedrático: las propias. alumno: las propias publicadas.
+        padre: las publicadas de sus hijos vinculados. Si un padre solicita explícitamente alumnoId
+        de un estudiante no vinculado, la API responde 403.
       parameters:
         - name: cursoId
           in: query
@@ -636,7 +666,7 @@ paths:
           schema: { type: string, example: "2026" }
         - name: alumnoId
           in: query
-          description: Solo admin y padre (limitado a sus hijos)
+          description: Admin y padre (limitado a sus hijos); un alumno solo consulta sus propias notas
           schema: { type: integer }
         - name: catedraticoId
           in: query
@@ -725,6 +755,9 @@ paths:
         - name: periodo
           in: query
           schema: { type: string }
+        - name: periodoAcademicoId
+          in: query
+          schema: { type: integer }
       responses:
         "200":
           description: Reporte
@@ -742,6 +775,9 @@ paths:
         - name: periodo
           in: query
           schema: { type: string }
+        - name: periodoAcademicoId
+          in: query
+          schema: { type: integer }
         - name: cursoId
           in: query
           schema: { type: integer }
@@ -759,7 +795,7 @@ paths:
     get:
       tags: [Reportes]
       summary: Boleta de notas en PDF
-      description: admin, catedrático del alumno, el propio alumno o su padre/tutor.
+      description: Admin puede consultar la boleta completa. Alumno y padre/tutor solo reciben notas publicadas. El catedrático solo recibe las notas de sus cursos asignados en los que está inscrito el alumno.
       parameters:
         - name: alumnoId
           in: path
@@ -768,6 +804,9 @@ paths:
         - name: periodo
           in: query
           schema: { type: string }
+        - name: periodoAcademicoId
+          in: query
+          schema: { type: integer }
       responses:
         "200":
           description: Archivo PDF
@@ -776,16 +815,40 @@ paths:
               schema: { type: string, format: binary }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /api/reportes/estado-cuenta-pdf/{alumnoId}:
+    get:
+      tags: [Reportes]
+      summary: Descargar estado de cuenta del alumno (admin, alumno propio o padre autorizado)
+      parameters:
+        - name: alumnoId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: cicloAcademicoId
+          in: query
+          schema: { type: integer }
+        - name: periodoAcademicoId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Archivo PDF con cargos, pagos y saldo pendiente por moneda
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/pagos/checkout:
     post:
       tags: [Pagos]
-      summary: Crear sesión de pago en Stripe (alumno por sí mismo, padre por sus hijos)
+      summary: Crear Checkout para un cargo pendiente (alumno propio o hijo vinculado)
+      description: El monto proviene del cargo. `monto` opcional solicita un abono; el servidor lo valida contra el saldo pendiente.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/CheckoutRequest" }
-            example: { alumnoId: 1, concepto: Colegiatura Agosto 2026, monto: 250.0 }
+            example: { cargoId: 42, monto: 150.00 }
       responses:
         "200":
           description: Sesión creada
@@ -798,12 +861,18 @@ paths:
   /api/pagos:
     get:
       tags: [Pagos]
-      summary: Consultar pagos (admin: todos; alumno/padre: los propios)
+      summary: "Consultar pagos (admin: todos; alumno/padre: los propios)"
       parameters:
         - name: alumnoId
           in: query
-          description: Solo admin
+          description: Admin, o selección autorizada de alumno para alumno/padre
           schema: { type: integer }
+        - name: cargoId
+          in: query
+          schema: { type: integer }
+        - name: estado
+          in: query
+          schema: { type: string, enum: [pendiente, pagado, fallido, cancelado] }
       responses:
         "200":
           description: Lista
@@ -819,8 +888,9 @@ paths:
       summary: Webhook de Stripe
       description: |
         Uso exclusivo de Stripe. Verifica la cabecera `Stripe-Signature`. Es idempotente:
-        solo un pago `pendiente` cambia de estado. `checkout.session.completed` (con cobro confirmado)
-        marca `pagado`; `checkout.session.expired` marca `cancelado`.
+        Los eventos se registran en la base de datos en la misma transacción del pago.
+        `completed` confirmado marca `pagado`, `expired` marca `cancelado` y
+        `async_payment_failed` marca `fallido`. Repetir un `event.id` no duplica el pago.
       security: []
       parameters:
         - name: Stripe-Signature
@@ -842,6 +912,246 @@ paths:
           description: Firma inválida
         "500":
           description: Error al procesar; Stripe reintentará
+  /api/ciclos:
+    get:
+      tags: [Ciclos/Períodos]
+      summary: Listar ciclos académicos
+      responses:
+        "200": { description: Lista de ciclos y períodos }
+    post:
+      tags: [Ciclos/Períodos]
+      summary: Crear ciclo académico (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CicloAcademicoInput" }
+      responses:
+        "201": { description: Ciclo creado }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/ciclos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Ciclos/Períodos]
+      summary: Actualizar ciclo académico (admin)
+      responses:
+        "200": { description: Ciclo actualizado }
+        "409": { description: No se cierra el ciclo si conserva períodos abiertos }
+  /api/periodos:
+    get:
+      tags: [Ciclos/Períodos]
+      summary: Listar períodos académicos
+      parameters:
+        - name: cicloAcademicoId
+          in: query
+          schema: { type: integer }
+        - name: estado
+          in: query
+          schema: { type: string, enum: [abierto, cerrado] }
+      responses:
+        "200": { description: Lista de períodos }
+    post:
+      tags: [Ciclos/Períodos]
+      summary: Crear período (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PeriodoAcademicoInput" }
+      responses:
+        "201": { description: Período creado }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: Ciclo cerrado o nombre duplicado }
+  /api/periodos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Ciclos/Períodos]
+      summary: Actualizar o cerrar período (admin)
+      responses:
+        "200": { description: Período actualizado }
+        "409": { description: Regla del ciclo impide el cambio }
+  /api/evaluaciones:
+    get:
+      tags: [Evaluaciones]
+      summary: Consultar evaluaciones (admin o catedrático responsable)
+      parameters:
+        - name: cursoId
+          in: query
+          schema: { type: integer }
+        - name: periodoAcademicoId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200": { description: Lista de evaluaciones }
+    post:
+      tags: [Evaluaciones]
+      summary: Crear evaluación (admin o catedrático asignado)
+      description: La suma de puntajes máximos por curso y período no puede superar 100.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EvaluacionInput" }
+      responses:
+        "201": { description: Evaluación creada }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: Puntaje máximo acumulado superior a 100 }
+  /api/evaluaciones/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Evaluaciones]
+      summary: Actualizar evaluación (admin o catedrático responsable)
+      responses:
+        "200": { description: Evaluación actualizada }
+        "409": { description: Máximo incompatible con otras evaluaciones o notas existentes }
+    delete:
+      tags: [Evaluaciones]
+      summary: Desactivar evaluación sin calificaciones (admin o responsable)
+      responses:
+        "200": { description: Evaluación desactivada }
+        "409": { description: No se desactiva si tiene calificaciones }
+  /api/evaluaciones/{id}/calificaciones:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Evaluaciones]
+      summary: Consultar calificaciones de evaluación (admin o responsable)
+      responses:
+        "200": { description: Calificaciones por alumno }
+    post:
+      tags: [Evaluaciones]
+      summary: Registrar o actualizar calificación (admin o responsable)
+      description: Requiere alumno inscrito; valor no puede superar puntajeMaximo. Al completarse el período, consolida la nota final en estado borrador.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CalificacionEvaluacionInput" }
+      responses:
+        "200": { description: Calificación y nota final consolidada, si está completa }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: Período cerrado o inscripción inválida }
+  /api/notas/{id}/historial:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Notas]
+      summary: Consultar auditoría de la nota (admin o catedrático responsable)
+      responses:
+        "200": { description: Historial inmutable de cambios }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/cargos:
+    get:
+      tags: [Cargos]
+      summary: Consultar cargos y saldos calculados (admin, alumno propio o padre autorizado)
+      parameters:
+        - name: alumnoId
+          in: query
+          schema: { type: integer }
+        - name: estado
+          in: query
+          schema: { type: string, enum: [pendiente, parcial, pagado, vencido, anulado] }
+      responses:
+        "200": { description: Cargos con pagos, montoPagado, saldoPendiente y estado calculado }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Cargos]
+      summary: Crear cargo para alumno (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CargoInput" }
+      responses:
+        "201": { description: Cargo creado }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/cargos/solvencia:
+    get:
+      tags: [Cargos]
+      summary: Calcular solvencia del alumno (admin, alumno propio o padre autorizado)
+      parameters:
+        - name: alumnoId
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: solvencia financiera y saldos pendientes separados por moneda }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/cargos/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Cargos]
+      summary: Editar cargo sin pagos pendientes o confirmados (admin)
+      responses:
+        "200": { description: Cargo actualizado }
+        "409": { description: Cargo tiene historial de pago activo }
+  /api/cargos/{id}/anular:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    patch:
+      tags: [Cargos]
+      summary: Anular cargo sin pagos pendientes o confirmados (admin; requiere motivo)
+      responses:
+        "200": { description: Cargo anulado con motivo y autor registrados }
+        "409": { description: Cargo con pago pendiente o confirmado }
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Indicadores y accesos rápidos filtrados por el rol autenticado
+      parameters:
+        - name: periodoAcademicoId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Resumen administrativo, docente, del alumno o de los alumnos vinculados al tutor
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dashboard" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/requisitos-solvencia:
+    get:
+      tags: [Requisitos de solvencia]
+      summary: Listar tipos de documento que requieren solvencia
+      responses:
+        "200":
+          description: Configuración visible para usuarios autenticados
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RequisitoSolvenciaDocumento" }
+    post:
+      tags: [Requisitos de solvencia]
+      summary: Crear tipo de documento (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RequisitoSolvenciaDocumentoCreate" }
+      responses:
+        "201": { description: Requisito creado }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: El tipo de documento ya existe }
+  /api/requisitos-solvencia/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Requisitos de solvencia]
+      summary: Actualizar configuración de solvencia (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RequisitoSolvenciaDocumentoInput" }
+      responses:
+        "200": { description: Requisito actualizado }
+        "404": { $ref: "#/components/responses/NotFound" }
 components:
   securitySchemes:
     bearerAuth:
@@ -1005,6 +1315,7 @@ components:
         alumnoId: { type: integer }
         cursoId: { type: integer }
         periodo: { type: string, default: "2026" }
+        periodoAcademicoId: { type: integer, nullable: true }
     AsignacionCurso:
       allOf:
         - $ref: "#/components/schemas/AsignacionInput"
@@ -1021,6 +1332,7 @@ components:
         horaInicio: { type: string, example: "08:00", pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
         horaFin: { type: string, example: "10:00", pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
         periodo: { type: string, default: "2026" }
+        periodoAcademicoId: { type: integer, nullable: true }
     Horario:
       allOf:
         - $ref: "#/components/schemas/HorarioInput"
@@ -1053,6 +1365,7 @@ components:
         valor: { type: number }
         estado: { type: string, enum: [aprobado, reprobado], description: "61 o más aprueba" }
         periodo: { type: string }
+        periodoAcademicoId: { type: integer, nullable: true }
     Indicadores:
       type: object
       properties:
@@ -1067,11 +1380,10 @@ components:
           example: { "0-60 (Reprobado)": 3, "61-70": 5, "71-80": 8, "81-90": 4, "91-100": 2 }
     CheckoutRequest:
       type: object
-      required: [alumnoId, concepto, monto]
+      required: [cargoId]
       properties:
-        alumnoId: { type: integer }
-        concepto: { type: string }
-        monto: { type: number, exclusiveMinimum: 0 }
+        cargoId: { type: integer }
+        monto: { type: number, exclusiveMinimum: 0, description: Abono opcional validado contra el saldo por el servidor }
     CheckoutResponse:
       type: object
       properties:
@@ -1086,7 +1398,108 @@ components:
         concepto: { type: string }
         monto: { type: number }
         moneda: { type: string, example: usd }
-        estado: { type: string, enum: [pendiente, pagado, cancelado] }
+        estado: { type: string, enum: [pendiente, pagado, fallido, cancelado] }
         fechaPago: { type: string, format: date-time, nullable: true }
         alumno: { $ref: "#/components/schemas/Alumno" }
-
+        cargo: { $ref: "#/components/schemas/Cargo" }
+    CicloAcademicoInput:
+      type: object
+      required: [nombre, fechaInicio, fechaFin]
+      properties:
+        nombre: { type: string, maxLength: 80 }
+        fechaInicio: { type: string, format: date }
+        fechaFin: { type: string, format: date }
+    PeriodoAcademicoInput:
+      type: object
+      required: [cicloAcademicoId, nombre, tipo, fechaInicio, fechaFin]
+      properties:
+        cicloAcademicoId: { type: integer }
+        nombre: { type: string, maxLength: 80 }
+        tipo: { type: string, enum: [bimestre, trimestre, semestre] }
+        fechaInicio: { type: string, format: date }
+        fechaFin: { type: string, format: date }
+    EvaluacionInput:
+      type: object
+      required: [cursoId, periodoAcademicoId, nombre, puntajeMaximo]
+      properties:
+        cursoId: { type: integer }
+        catedraticoId: { type: integer, description: Obligatorio para administración }
+        periodoAcademicoId: { type: integer }
+        nombre: { type: string, maxLength: 120 }
+        puntajeMaximo: { type: number, exclusiveMinimum: 0, maximum: 100 }
+    CalificacionEvaluacionInput:
+      type: object
+      required: [alumnoId, valor]
+      properties:
+        alumnoId: { type: integer }
+        valor: { type: number, minimum: 0 }
+        motivo: { type: string }
+    CargoInput:
+      type: object
+      required: [alumnoId, concepto, montoOriginal]
+      properties:
+        alumnoId: { type: integer }
+        concepto: { type: string, maxLength: 160 }
+        descripcion: { type: string }
+        montoOriginal: { type: number, exclusiveMinimum: 0 }
+        moneda: { type: string, enum: [GTQ, USD], default: GTQ }
+        fechaEmision: { type: string, format: date }
+        fechaVencimiento: { type: string, format: date, nullable: true }
+        cicloAcademicoId: { type: integer, nullable: true }
+        periodoAcademicoId: { type: integer, nullable: true }
+    Cargo:
+      allOf:
+        - $ref: "#/components/schemas/CargoInput"
+        - type: object
+          properties:
+            id: { type: integer }
+            montoPagado: { type: number }
+            saldoPendiente: { type: number, minimum: 0 }
+            estado: { type: string, enum: [pendiente, parcial, pagado, vencido, anulado] }
+            anuladoEn: { type: string, format: date-time, nullable: true }
+            pagos:
+              type: array
+              items: { $ref: "#/components/schemas/Pago" }
+    AlumnoVinculado:
+      type: object
+      properties:
+        vinculoId: { type: integer }
+        parentesco: { type: string, nullable: true }
+        alumno: { $ref: "#/components/schemas/Alumno" }
+    RequisitoSolvenciaDocumentoInput:
+      type: object
+      properties:
+        tipoDocumento: { type: string, minLength: 1, maxLength: 80 }
+        requiereSolvencia: { type: boolean }
+    RequisitoSolvenciaDocumentoCreate:
+      allOf:
+        - $ref: "#/components/schemas/RequisitoSolvenciaDocumentoInput"
+        - type: object
+          required: [tipoDocumento, requiereSolvencia]
+    RequisitoSolvenciaDocumento:
+      allOf:
+        - $ref: "#/components/schemas/RequisitoSolvenciaDocumentoInput"
+        - type: object
+          properties:
+            id: { type: integer }
+    Dashboard:
+      type: object
+      required: [rol]
+      properties:
+        rol: { $ref: "#/components/schemas/Rol" }
+        resumen:
+          type: object
+          additionalProperties: true
+        alumno:
+          type: object
+          additionalProperties: true
+        alumnos:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        cursos:
+          type: array
+          items:
+            type: object
+            additionalProperties: true

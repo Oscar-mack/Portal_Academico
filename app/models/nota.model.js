@@ -35,6 +35,10 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       defaultValue: "2026"
     },
+    periodoAcademicoId: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
     // B5: campo para el flujo de publicacion explicita.
     // null = no publicada (solo admin y catedratico la ven).
     // fecha = publicada (alumnos y tutores pueden verla).
@@ -47,7 +51,8 @@ module.exports = (sequelize, DataTypes) => {
     }
   }, {
     indexes: [
-      { unique: true, fields: ["alumnoId", "cursoId", "periodo"] }
+      { unique: true, fields: ["alumnoId", "cursoId", "periodo"] },
+      { unique: true, fields: ["alumnoId", "cursoId", "periodoAcademicoId"] }
     ],
     hooks: {
       // El hook recalcula el estado automaticamente al guardar o actualizar.

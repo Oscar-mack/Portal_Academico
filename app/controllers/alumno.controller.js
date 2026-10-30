@@ -4,6 +4,7 @@ const GradoCarrera = db.gradosCarreras;
 const Curso = db.cursos;
 const Nota = db.notas;
 const { getAlumnoIdsVisibles } = require("../utils/access.js");
+const ROLES = require("../config/roles.js");
 
 // RF-03 — Gestión de alumnos (RN-01: un alumno debe estar asociado a un grado/carrera)
 exports.create = async (req, res) => {
@@ -30,6 +31,7 @@ exports.findAll = async (req, res) => {
     // Permite filtrar por grado/carrera: GET /api/alumnos?gradoCarreraId=1
     const where = {};
     if (req.query.gradoCarreraId) where.gradoCarreraId = req.query.gradoCarreraId;
+    if (req.userRole !== ROLES.ADMIN || req.query.incluirInactivos !== "true") where.activo = true;
 
     // Cada rol solo ve a los alumnos que le corresponden.
     const visibles = await getAlumnoIdsVisibles(req);
@@ -82,9 +84,9 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    const num = await Alumno.destroy({ where: { id: req.params.id } });
+    const [num] = await Alumno.update({ activo: false }, { where: { id: req.params.id } });
     if (num === 1) {
-      res.send({ message: "Alumno eliminado exitosamente." });
+      res.send({ message: "Alumno desactivado; su historial académico y financiero se conserva." });
     } else {
       res.status(404).send({ message: `No se pudo eliminar el alumno con id=${req.params.id}.` });
     }
@@ -92,4 +94,3 @@ exports.delete = async (req, res) => {
     res.status(500).send({ message: "Error al eliminar el alumno." });
   }
 };
-

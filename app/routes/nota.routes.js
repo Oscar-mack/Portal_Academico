@@ -10,6 +10,7 @@ module.exports = app => {
   // RF-08 — Consulta de notas: visibilidad restringida por rol dentro del controlador.
   // B1: alumnos y tutores solo ven notas con publicadaEn != null.
   router.get("/", [verifyToken, isAnyRole], notas.findAll);
+  router.get("/:id/historial", [verifyToken, isAnyRole], notas.historial);
   router.get("/:id", [verifyToken, isAnyRole], notas.findOne);
   router.put("/:id", [verifyToken, isAdminOrCatedratico], notas.update);
 

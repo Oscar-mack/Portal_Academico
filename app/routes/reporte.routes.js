@@ -1,4 +1,5 @@
-const { verifyToken, isAdmin, isAdminOrCatedratico, isAnyRole } = require("../middlewares/authJwt.js");
+const { verifyToken, isAdmin, isAdminOrCatedratico, isAnyRole, hasRole } = require("../middlewares/authJwt.js");
+const ROLES = require("../config/roles.js");
 
 module.exports = app => {
   const reportes = require("../controllers/reporte.controller.js");
@@ -12,7 +13,10 @@ module.exports = app => {
 
   // RF-10 / RF-11 — Boleta en PDF (Admin, Catedrático, el propio Alumno o su Padre/Tutor)
   router.get("/boleta-pdf/:alumnoId", [verifyToken, isAnyRole], reportes.boletaPDF);
+  router.get("/estado-cuenta-pdf/:alumnoId", [
+    verifyToken,
+    hasRole(ROLES.ADMIN, ROLES.ALUMNO, ROLES.PADRE)
+  ], reportes.estadoCuentaPDF);
 
   app.use("/api/reportes", router);
 };
-

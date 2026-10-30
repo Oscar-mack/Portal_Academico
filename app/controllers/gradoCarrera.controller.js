@@ -1,5 +1,6 @@
 const db = require("../models");
 const GradoCarrera = db.gradosCarreras;
+const ROLES = require("../config/roles.js");
 
 exports.create = async (req, res) => {
 	try {
@@ -19,7 +20,9 @@ exports.create = async (req, res) => {
 
 exports.findAll = async (req, res) => {
 	try {
-		const gradosCarreras = await GradoCarrera.findAll();
+		const where = {};
+		if (req.userRole !== ROLES.ADMIN || req.query.incluirInactivos !== "true") where.activo = true;
+		const gradosCarreras = await GradoCarrera.findAll({ where });
 		res.send(gradosCarreras);
 	} catch (error) {
 		res.status(500).send({ message: "Error al obtener los grados y carreras." });
@@ -52,11 +55,11 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
 	try {
-		const deleted = await GradoCarrera.destroy({ where: { id: req.params.id } });
-		if (deleted !== 1) {
+		const [updated] = await GradoCarrera.update({ activo: false }, { where: { id: req.params.id } });
+		if (updated !== 1) {
 			return res.status(404).send({ message: `No se pudo eliminar el grado o carrera con id=${req.params.id}.` });
 		}
-		res.send({ message: "Grado o carrera eliminado exitosamente." });
+		res.send({ message: "Grado o carrera desactivado; el historial relacionado se conserva." });
 	} catch (error) {
 		res.status(500).send({ message: "Error al eliminar el grado o carrera." });
 	}

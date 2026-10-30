@@ -100,7 +100,9 @@ test.after(async () => {
 
 test("health y readiness responden", async () => {
   assert.equal((await request(app).get("/health")).status, 200);
-  assert.equal((await request(app).get("/ready")).status, 200);
+  const ready = await request(app).get("/ready");
+  assert.equal(ready.status, 200);
+  assert.deepEqual(ready.body.checks, { database: "ok", schema: "ok" });
 });
 
 test("un alumno no puede consultar información de otro alumno", async () => {
@@ -133,9 +135,234 @@ test("un padre solo consulta alumnos vinculados", async () => {
   const boleta = await request(app).get(`/api/reportes/boleta-pdf/${ctx.al2}`).set(auth(ctx.tokens.padre1));
   assert.equal(boleta.status, 403);
 
+  const cargoAjeno = await db.cargos.create({
+    alumnoId: ctx.al2,
+    concepto: "Colegiatura",
+    montoOriginal: "100.00",
+    moneda: "GTQ",
+    fechaEmision: "2026-01-01"
+  });
   const pago = await request(app).post("/api/pagos/checkout").set(auth(ctx.tokens.padre1))
-    .send({ alumnoId: ctx.al2, concepto: "Colegiatura", monto: 100 });
+    .send({ cargoId: cargoAjeno.id });
   assert.equal(pago.status, 403);
+});
+
+test("mis-alumnos y dashboard se limitan a los perfiles autorizados", async () => {
+  const misAlumnos = await request(app).get("/api/padres-alumnos/mis-alumnos")
+    .set(auth(ctx.tokens.padre1));
+  assert.equal(misAlumnos.status, 200);
+  assert.deepEqual(misAlumnos.body.map(vinculo => vinculo.alumno.id), [ctx.al1]);
+
+  const dashboardPadre = await request(app).get("/api/dashboard")
+    .set(auth(ctx.tokens.padre1));
+  assert.equal(dashboardPadre.status, 200);
+  assert.deepEqual(dashboardPadre.body.alumnos.map(resumen => resumen.alumno.id), [ctx.al1]);
+
+  const dashboardAlumno = await request(app).get("/api/dashboard")
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(dashboardAlumno.status, 200);
+  assert.equal(dashboardAlumno.body.alumno.id, ctx.al1);
+
+  const dashboardDocente = await request(app).get("/api/dashboard")
+    .set(auth(ctx.tokens.cat1));
+  assert.equal(dashboardDocente.status, 200);
+  assert.equal(dashboardDocente.body.resumen.cursosAsignados, 1);
+
+  const dashboardAdmin = await request(app).get("/api/dashboard")
+    .set(auth(ctx.tokens.admin));
+  assert.equal(dashboardAdmin.status, 200);
+  assert.equal(dashboardAdmin.body.resumen.alumnosActivos, 2);
+});
+
+test("configuración de documentos de solvencia solo la administra un administrador", async () => {
+  const creado = await request(app).post("/api/requisitos-solvencia")
+    .set(auth(ctx.tokens.admin))
+    .send({ tipoDocumento: "Constancia de estudios", requiereSolvencia: true });
+  assert.equal(creado.status, 201);
+
+  const listado = await request(app).get("/api/requisitos-solvencia")
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(listado.status, 200);
+  assert.equal(listado.body[0].requiereSolvencia, true);
+
+  const prohibido = await request(app).put(`/api/requisitos-solvencia/${creado.body.id}`)
+    .set(auth(ctx.tokens.padre1))
+    .send({ requiereSolvencia: false });
+  assert.equal(prohibido.status, 403);
+});
+
+test("los horarios se limitan a cursos autorizados por rol", async () => {
+  const admin = await request(app).get("/api/horarios-catedratico").set(auth(ctx.tokens.admin));
+  assert.equal(admin.status, 200);
+  assert.ok(admin.body.length >= 3);
+
+  const catedratico = await request(app).get("/api/horarios-catedratico")
+    .set(auth(ctx.tokens.cat1));
+  assert.equal(catedratico.status, 200);
+  assert.ok(catedratico.body.every(horario => horario.catedraticoId === ctx.cat1));
+
+  const cursoAjeno = await request(app).get(`/api/horarios-catedratico?cursoId=${ctx.c2}`)
+    .set(auth(ctx.tokens.cat1));
+  assert.deepEqual(cursoAjeno.body, []);
+
+  const alumno = await request(app).get("/api/horarios-catedratico")
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(alumno.status, 200);
+  assert.ok(alumno.body.every(horario => horario.cursoId === ctx.c1));
+
+  const padre = await request(app).get("/api/horarios-catedratico")
+    .set(auth(ctx.tokens.padre1));
+  assert.equal(padre.status, 200);
+  assert.ok(padre.body.every(horario => horario.cursoId === ctx.c1));
+
+  const hijoNoVinculado = await request(app)
+    .get(`/api/horarios-catedratico?alumnoId=${ctx.al2}`)
+    .set(auth(ctx.tokens.padre1));
+  assert.equal(hijoNoVinculado.status, 403);
+
+  const horarioDeOtro = admin.body.find(horario => horario.cursoId === ctx.c2);
+  const horarioAjeno = await request(app).get(`/api/horarios-catedratico/${horarioDeOtro.id}`)
+    .set(auth(ctx.tokens.cat1));
+  assert.equal(horarioAjeno.status, 403);
+});
+
+test("un padre no puede solicitar notas de un alumno no vinculado", async () => {
+  const ajeno = await request(app)
+    .get(`/api/notas?alumnoId=${ctx.al2}`)
+    .set(auth(ctx.tokens.padre1));
+  assert.equal(ajeno.status, 403);
+});
+
+test("alumnos y padres solo reciben notas publicadas", async () => {
+  const nota = await db.notas.create({
+    alumnoId: ctx.al1,
+    cursoId: ctx.c1,
+    catedraticoId: ctx.cat1,
+    valor: 85,
+    periodo: "2026-publicacion"
+  });
+
+  const alumnoAntes = await request(app).get(`/api/notas?periodo=${nota.periodo}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.deepEqual(alumnoAntes.body, []);
+  const padreAntes = await request(app).get(`/api/notas?periodo=${nota.periodo}`)
+    .set(auth(ctx.tokens.padre1));
+  assert.deepEqual(padreAntes.body, []);
+
+  const publicar = await request(app).patch(`/api/notas/${nota.id}/publicar`)
+    .set(auth(ctx.tokens.cat1));
+  assert.equal(publicar.status, 200);
+
+  const alumnoDespues = await request(app).get(`/api/notas?periodo=${nota.periodo}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.deepEqual(alumnoDespues.body.map(registro => registro.id), [nota.id]);
+  const padreDespues = await request(app).get(`/api/notas?periodo=${nota.periodo}`)
+    .set(auth(ctx.tokens.padre1));
+  assert.deepEqual(padreDespues.body.map(registro => registro.id), [nota.id]);
+});
+
+test("períodos y evaluaciones calculan notas finales sin alterar períodos históricos", async () => {
+  const historica = await db.notas.create({
+    alumnoId: ctx.al1,
+    cursoId: ctx.c1,
+    catedraticoId: ctx.cat1,
+    valor: 72,
+    periodo: "2025"
+  });
+  const ciclo = await request(app).post("/api/ciclos").set(auth(ctx.tokens.admin))
+    .send({ nombre: "Ciclo de pruebas", fechaInicio: "2026-01-01", fechaFin: "2026-12-31" });
+  assert.equal(ciclo.status, 201);
+  const periodo = await request(app).post("/api/periodos").set(auth(ctx.tokens.admin))
+    .send({
+      cicloAcademicoId: ciclo.body.id,
+      nombre: "Primer bimestre",
+      tipo: "bimestre",
+      fechaInicio: "2026-01-01",
+      fechaFin: "2026-03-31"
+    });
+  assert.equal(periodo.status, 201);
+    const traslapado = await request(app).post("/api/periodos").set(auth(ctx.tokens.admin))
+      .send({
+        cicloAcademicoId: ciclo.body.id,
+        nombre: "Período traslapado",
+        tipo: "bimestre",
+        fechaInicio: "2026-03-01",
+        fechaFin: "2026-04-30"
+      });
+    assert.equal(traslapado.status, 409);
+    assert.equal((await request(app).put(`/api/ciclos/${ciclo.body.id}`)
+      .set(auth(ctx.tokens.admin)).send({ fechaFin: "2026-03-30" })).status, 409);
+
+  const horario = await request(app).post("/api/horarios-catedratico").set(auth(ctx.tokens.admin))
+    .send({
+      catedraticoId: ctx.cat1,
+      cursoId: ctx.c1,
+      dia: "Viernes",
+      horaInicio: "08:00",
+      horaFin: "09:00",
+      periodoAcademicoId: periodo.body.id
+    });
+  assert.equal(horario.status, 201);
+  const inscripcion = await request(app).post("/api/asignaciones-curso").set(auth(ctx.tokens.admin))
+    .send({ alumnoId: ctx.al1, cursoId: ctx.c1, periodoAcademicoId: periodo.body.id });
+  assert.equal(inscripcion.status, 200);
+
+  const crearEvaluacion = (nombre, puntajeMaximo) => request(app).post("/api/evaluaciones")
+    .set(auth(ctx.tokens.cat1))
+    .send({ cursoId: ctx.c1, periodoAcademicoId: periodo.body.id, nombre, puntajeMaximo });
+  const tarea = await crearEvaluacion("Tareas", 40);
+  const examen = await crearEvaluacion("Examen", 60);
+  assert.equal(tarea.status, 201, JSON.stringify(tarea.body));
+  assert.equal(examen.status, 201, JSON.stringify(examen.body));
+  assert.equal((await crearEvaluacion("Extra", 1)).status, 409);
+
+  const registrar = (evaluacionId, valor, motivo) => request(app)
+    .post(`/api/evaluaciones/${evaluacionId}/calificaciones`)
+    .set(auth(ctx.tokens.cat1))
+    .send({ alumnoId: ctx.al1, valor, motivo });
+  const sobreMaximo = await registrar(tarea.body.id, 41);
+  assert.equal(sobreMaximo.status, 400);
+  assert.equal((await registrar(tarea.body.id, 35)).body.consolidada, false);
+  const finalResponse = await registrar(examen.body.id, 50);
+  assert.equal(finalResponse.status, 200);
+  assert.equal(finalResponse.body.notaFinal.valor, 85);
+  assert.equal(finalResponse.body.notaFinal.estado, "aprobado");
+  const borrarInscripcion = await request(app).delete(`/api/asignaciones-curso/${inscripcion.body.id}`)
+    .set(auth(ctx.tokens.admin));
+  assert.equal(borrarInscripcion.status, 409);
+
+  const notasAntesPublicar = await request(app)
+    .get(`/api/notas?periodoAcademicoId=${periodo.body.id}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.deepEqual(notasAntesPublicar.body, []);
+  const publicar = await request(app)
+    .patch(`/api/notas/${finalResponse.body.notaFinal.id}/publicar`)
+    .set(auth(ctx.tokens.cat1));
+  assert.equal(publicar.status, 200);
+  assert.equal((await request(app).get(`/api/notas?periodoAcademicoId=${periodo.body.id}`)
+    .set(auth(ctx.tokens.alumno1))).body[0].valor, 85);
+  assert.equal((await request(app).put(`/api/notas/${finalResponse.body.notaFinal.id}`)
+    .set(auth(ctx.tokens.admin)).send({ valor: 99 })).status, 409);
+  assert.equal((await request(app).put(`/api/evaluaciones/${examen.body.id}`)
+    .set(auth(ctx.tokens.admin)).send({ nombre: "Examen editado" })).status, 409);
+
+  const corregida = await registrar(examen.body.id, 51, "Corrección de evaluación");
+  assert.equal(corregida.body.notaFinal.valor, 86);
+  assert.equal(corregida.body.notaFinal.publicadaEn, null);
+  const historial = await request(app)
+    .get(`/api/notas/${finalResponse.body.notaFinal.id}/historial`)
+    .set(auth(ctx.tokens.cat1));
+  assert.equal(historial.status, 200);
+  assert.equal(historial.body.length, 1);
+  assert.equal(Number(historial.body[0].valorAnterior), 85);
+  assert.equal(Number(historial.body[0].valorNuevo), 86);
+  assert.equal((await db.notas.findByPk(historica.id)).periodoAcademicoId, null);
+
+  assert.equal((await request(app).put(`/api/periodos/${periodo.body.id}`)
+    .set(auth(ctx.tokens.admin)).send({ estado: "cerrado" })).status, 200);
+  assert.equal((await registrar(examen.body.id, 52)).status, 409);
+  assert.equal((await request(app).delete(`/api/horarios-catedratico/${horario.body.id}`)
+    .set(auth(ctx.tokens.admin))).status, 409);
 });
 
 test("un catedrático solo accede a sus secciones", async () => {
@@ -181,6 +408,12 @@ test("no se puede inscribir un alumno en un curso de otra carrera", async () => 
   const res = await request(app).post("/api/asignaciones-curso").set(auth(ctx.tokens.admin))
     .send({ alumnoId: ctx.al1, cursoId: ctx.c3, periodo: "2026" });
   assert.equal(res.status, 400);
+  const asignacion = await db.asignacionesCurso.findOne({
+    where: { alumnoId: ctx.al1, cursoId: ctx.c1, periodo: "2026" }
+  });
+  const cambioInvalido = await request(app).put(`/api/asignaciones-curso/${asignacion.id}`)
+    .set(auth(ctx.tokens.admin)).send({ cursoId: ctx.c3 });
+  assert.equal(cambioInvalido.status, 400);
 });
 
 test("se detectan cruces de horario al inscribir", async () => {
@@ -214,6 +447,9 @@ test("se validan horarios de catedráticos", async () => {
   const valido = await request(app).post("/api/horarios-catedratico").set(auth(ctx.tokens.admin))
     .send({ catedraticoId: ctx.cat1, cursoId: ctx.c4, dia: "Jueves", horaInicio: "10:00", horaFin: "12:00" });
   assert.equal(valido.status, 201);
+  const cruceAlEditar = await request(app).put(`/api/horarios-catedratico/${valido.body.id}`)
+    .set(auth(ctx.tokens.admin)).send({ dia: "Lunes", horaInicio: "09:00", horaFin: "11:00" });
+  assert.equal(cruceAlEditar.status, 409);
 });
 
 test("límites de notas: 0, 60, 61 y 100 válidos; fuera de rango o no numéricas rechazadas", async () => {
@@ -331,6 +567,157 @@ test("webhook no marca como pagado si Stripe no confirma el cobro y cancela sesi
   assert.equal(expirado.estado, "cancelado");
 });
 
+test("los abonos confirmados actualizan saldo y solvencia; webhooks persistentes son idempotentes", async () => {
+  const cargo = await request(app).post("/api/cargos").set(auth(ctx.tokens.admin))
+    .send({
+      alumnoId: ctx.al1,
+      concepto: "Colegiatura de prueba",
+      montoOriginal: 350,
+      moneda: "GTQ",
+      fechaEmision: "2026-10-01",
+      fechaVencimiento: "2026-10-31"
+    });
+  assert.equal(cargo.status, 201);
+  const pagoHistorico = await db.pagos.create({
+    alumnoId: ctx.al1,
+    concepto: "Pago histórico sin cargo",
+    monto: "30.00",
+    moneda: "gtq",
+    estado: "pagado",
+    fechaPago: new Date()
+  });
+  await pagoHistorico.reload();
+  assert.equal(pagoHistorico.cargoId, null);
+    const saldoDemasiadoAlto = await request(app).post("/api/pagos/checkout")
+      .set(auth(ctx.tokens.alumno1))
+      .send({ cargoId: cargo.body.id, monto: 350.01 });
+    assert.equal(saldoDemasiadoAlto.status, 400);
+    const montoClienteAntiguo = await request(app).post("/api/pagos/checkout")
+      .set(auth(ctx.tokens.alumno1))
+      .send({ alumnoId: ctx.al1, concepto: "Importe manipulado", monto: 1 });
+    assert.equal(montoClienteAntiguo.status, 400);
+
+  const crearPago = async (monto, sessionId) => db.pagos.create({
+    alumnoId: ctx.al1,
+    cargoId: cargo.body.id,
+    concepto: cargo.body.concepto,
+    monto: monto.toFixed(2),
+    moneda: "gtq",
+    estado: "pendiente",
+    stripeSessionId: sessionId
+  });
+  const notificar = async (pago, eventId, amount) => {
+    const firmado = firmar({
+      id: eventId,
+      object: "event",
+      type: "checkout.session.completed",
+      data: { object: {
+        id: pago.stripeSessionId,
+        payment_status: "paid",
+        amount_total: amount * 100,
+        currency: "gtq",
+        metadata: { pagoId: String(pago.id), cargoId: String(cargo.body.id) }
+      } }
+    });
+    return request(app).post("/api/pagos/webhook")
+      .set("Content-Type", "application/json")
+      .set("Stripe-Signature", firmado.header)
+      .send(firmado.body);
+  };
+
+  const primerAbono = await crearPago(150, "cs-abono-1");
+  assert.equal((await notificar(primerAbono, "evt-abono-1", 150)).status, 200);
+  const saldoParcial = await request(app).get(`/api/cargos?alumnoId=${ctx.al1}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(saldoParcial.body[0].estado, "parcial");
+  assert.equal(saldoParcial.body[0].saldoPendiente, 200);
+  const solvenciaParcial = await request(app).get(`/api/cargos/solvencia?alumnoId=${ctx.al1}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(solvenciaParcial.body.solvente, false);
+  assert.equal(solvenciaParcial.body.conciliacionHistoricaRequerida, true);
+  assert.equal(solvenciaParcial.body.saldoPendiente, 200);
+
+  const segundoAbono = await crearPago(200, "cs-abono-2");
+  const webhookCompleto = await notificar(segundoAbono, "evt-abono-2", 200);
+  assert.equal(webhookCompleto.status, 200);
+  assert.equal((await notificar(segundoAbono, "evt-abono-2", 200)).body.duplicate, true);
+  const saldoFinal = await request(app).get(`/api/cargos?alumnoId=${ctx.al1}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(saldoFinal.body[0].estado, "pagado");
+  assert.equal(saldoFinal.body[0].saldoPendiente, 0);
+  assert.equal(saldoFinal.body[0].pagos.length, 2);
+  const solvenciaFinal = await request(app).get(`/api/cargos/solvencia?alumnoId=${ctx.al1}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(solvenciaFinal.body.solvente, false);
+  assert.equal(solvenciaFinal.body.conciliacionHistoricaRequerida, true);
+  assert.equal(solvenciaFinal.body.saldoPendiente, 0);
+  assert.equal(await db.eventosStripe.count({ where: { stripeEventId: "evt-abono-2" } }), 1);
+
+  const cargoFallido = await db.cargos.create({
+    alumnoId: ctx.al1,
+    concepto: "Cargo con intento fallido",
+    montoOriginal: "20.00",
+    moneda: "GTQ",
+    fechaEmision: "2026-10-01"
+  });
+  const pagoFallido = await db.pagos.create({
+    alumnoId: ctx.al1,
+    cargoId: cargoFallido.id,
+    concepto: cargoFallido.concepto,
+    monto: "20.00",
+    moneda: "gtq",
+    estado: "pendiente",
+    stripeSessionId: "cs-abono-fallido"
+  });
+  const intentoFallido = firmar({
+    id: "evt-abono-fallido",
+    object: "event",
+    type: "checkout.session.async_payment_failed",
+    data: { object: {
+      id: pagoFallido.stripeSessionId,
+      metadata: { pagoId: String(pagoFallido.id), cargoId: String(cargoFallido.id) }
+    } }
+  });
+  assert.equal((await request(app).post("/api/pagos/webhook")
+    .set("Content-Type", "application/json")
+    .set("Stripe-Signature", intentoFallido.header)
+    .send(intentoFallido.body)).status, 200);
+  await pagoFallido.reload();
+  assert.equal(pagoFallido.estado, "fallido");
+  const saldoCargoFallido = await request(app).get(`/api/cargos?alumnoId=${ctx.al1}`)
+    .set(auth(ctx.tokens.alumno1));
+  const detalleFallido = saldoCargoFallido.body.find(item => item.id === cargoFallido.id);
+  assert.equal(detalleFallido.saldoPendiente, 20);
+  await db.cargos.create({
+    alumnoId: ctx.al1,
+    concepto: "Cargo en dólares",
+    montoOriginal: "25.00",
+    moneda: "USD",
+    fechaEmision: "2026-10-01"
+  });
+  const solvenciaMixta = await request(app).get(`/api/cargos/solvencia?alumnoId=${ctx.al1}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(solvenciaMixta.body.saldoPendiente, null);
+  assert.deepEqual(solvenciaMixta.body.saldoPendientePorMoneda, { GTQ: 20, USD: 25 });
+
+  const solvenciaHistorica = await request(app)
+    .get(`/api/cargos/solvencia?alumnoId=${ctx.al1}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(solvenciaHistorica.body.conciliacionHistoricaRequerida, true);
+  assert.equal(solvenciaHistorica.body.solvente, false);
+  assert.ok(solvenciaHistorica.body.pagosHistoricosSinCargo.GTQ.montoPagado >= 30);
+
+  const estadoCuenta = await request(app)
+    .get(`/api/reportes/estado-cuenta-pdf/${ctx.al1}`)
+    .set(auth(ctx.tokens.padre1));
+  assert.equal(estadoCuenta.status, 200);
+  assert.match(estadoCuenta.headers["content-type"], /application\/pdf/);
+  assert.equal(estadoCuenta.body.subarray(0, 4).toString(), "%PDF");
+  assert.equal((await request(app)
+    .get(`/api/reportes/estado-cuenta-pdf/${ctx.al2}`)
+    .set(auth(ctx.tokens.padre1))).status, 403);
+});
+
 test("los logs no contienen contraseñas ni tokens", async () => {
   await login("alumno1", "ContraseñaSecreta999");
   await request(app).post("/api/auth/signin").set("Content-Type", "application/json").send("{malformado");
@@ -338,4 +725,13 @@ test("los logs no contienen contraseñas ni tokens", async () => {
   assert.ok(!salida.includes("ContraseñaSecreta999"));
   assert.ok(!salida.includes(PASSWORD));
   assert.ok(!salida.includes(ctx.tokens.alumno1));
+});
+
+test("readiness rechaza un esquema incompleto", async () => {
+  await db.sequelize.getQueryInterface().dropTable("eventos_stripe");
+  const ready = await request(app).get("/ready");
+  assert.equal(ready.status, 503);
+  assert.equal(ready.body.checks.database, "ok");
+  assert.equal(ready.body.checks.schema, "incomplete");
+  assert.ok(ready.body.missingSchema.includes("table:eventos_stripe"));
 });

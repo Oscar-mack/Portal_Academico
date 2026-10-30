@@ -49,6 +49,27 @@ exports.findAll = async (req, res) => {
   }
 };
 
+exports.misAlumnos = async (req, res) => {
+  try {
+    const vinculos = await PadreAlumno.findAll({
+      where: { usuarioId: req.userId },
+      include: [{
+        model: Alumno,
+        as: "alumno",
+        include: [{ model: db.gradosCarreras, as: "gradoCarrera" }]
+      }],
+      order: [["id", "ASC"]]
+    });
+    res.send(vinculos.map(vinculo => ({
+      vinculoId: vinculo.id,
+      parentesco: vinculo.parentesco,
+      alumno: vinculo.alumno
+    })));
+  } catch (error) {
+    res.status(500).send({ message: error.message || "Error al consultar los alumnos vinculados." });
+  }
+};
+
 exports.delete = async (req, res) => {
   try {
     const num = await PadreAlumno.destroy({ where: { id: req.params.id } });

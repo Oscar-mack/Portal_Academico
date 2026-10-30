@@ -85,27 +85,27 @@ exports.update = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     if (Number(req.params.id) === req.userId) {
-      return res.status(400).send({ message: "No puedes eliminar tu propia cuenta." });
+      return res.status(400).send({ message: "No puedes desactivar tu propia cuenta." });
     }
 
-    // D2: No permitir eliminar el unico admin activo.
+    // D2: No permitir desactivar el unico admin activo.
     const usuario = await Usuario.findByPk(req.params.id);
     if (usuario && usuario.rol === ROLES.ADMIN) {
       const totalAdminsActivos = await Usuario.count({ where: { rol: ROLES.ADMIN, activo: true } });
       if (totalAdminsActivos <= 1) {
         return res.status(409).send({
-          message: "No es posible eliminar el unico administrador activo."
+          message: "No es posible desactivar el unico administrador activo."
         });
       }
     }
 
-    const num = await Usuario.destroy({ where: { id: req.params.id } });
+    const [num] = await Usuario.update({ activo: false }, { where: { id: req.params.id } });
     if (num === 1) {
-      res.send({ message: "Usuario eliminado exitosamente." });
+      res.send({ message: "Usuario desactivado; sus relaciones e historial se conservan." });
     } else {
-      res.status(404).send({ message: `No se pudo eliminar el usuario con id=${req.params.id}.` });
+      res.status(404).send({ message: `No se pudo desactivar el usuario con id=${req.params.id}.` });
     }
   } catch (error) {
-    res.status(500).send({ message: "Error al eliminar el usuario." });
+    res.status(500).send({ message: "Error al desactivar el usuario." });
   }
 };

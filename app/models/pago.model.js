@@ -10,19 +10,34 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false
     },
     monto: {
-      type: DataTypes.FLOAT,
-      allowNull: false
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: false,
+      validate: { min: 0.01 }
     },
     moneda: {
       type: DataTypes.STRING,
       defaultValue: "usd"
     },
     estado: {
-      type: DataTypes.ENUM("pendiente", "pagado", "cancelado"),
-      defaultValue: "pendiente"
+      type: DataTypes.STRING(16),
+      allowNull: false,
+      defaultValue: "pendiente",
+      validate: { isIn: [["pendiente", "pagado", "fallido", "cancelado"]] }
+    },
+    cargoId: {
+      type: DataTypes.INTEGER,
+      allowNull: true
     },
     stripeSessionId: {
       type: DataTypes.STRING
+    },
+    stripePaymentIntentId: {
+      type: DataTypes.STRING(255)
+    },
+    metodoPago: {
+      type: DataTypes.STRING(40),
+      allowNull: false,
+      defaultValue: "stripe"
     },
     fechaPago: {
       type: DataTypes.DATE
@@ -31,4 +46,3 @@ module.exports = (sequelize, DataTypes) => {
 
   return Pago;
 };
-

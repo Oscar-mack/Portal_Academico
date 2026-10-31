@@ -189,8 +189,14 @@ test("alumnos y padres vinculados pueden iniciar checkout y consultar solo sus p
       .send({ cargoId: cargoAlumno.id });
     assert.equal(checkoutAlumno.status, 200, `${JSON.stringify(checkoutAlumno.body)} ${logs.slice(-3).join(" | ")}`);
     assert.equal(checkoutAlumno.body.url, "https://checkout.stripe.test/session/1");
-    assert.equal(checkoutRequests[0].success_url, "https://portal.test/pago-exitoso");
-    assert.equal(checkoutRequests[0].cancel_url, "https://portal.test/pago-cancelado");
+    assert.equal(
+      checkoutRequests[0].success_url,
+      `https://portal.test/pago-exitoso?pago_id=${checkoutAlumno.body.pagoId}&session_id={CHECKOUT_SESSION_ID}`
+    );
+    assert.equal(
+      checkoutRequests[0].cancel_url,
+      `https://portal.test/pago-cancelado?pago_id=${checkoutAlumno.body.pagoId}`
+    );
 
     const cargoPadre = await crearCargo(ctx.al1);
     const checkoutPadre = await request(app).post("/api/pagos/checkout")

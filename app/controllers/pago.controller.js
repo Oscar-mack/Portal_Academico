@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const Stripe = require("stripe");
 const db = require("../models");
 const ROLES = require("../config/roles.js");
@@ -13,6 +14,23 @@ function checkoutReturnUrl(path) {
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
   return new URL(path, `${frontendUrl.replace(/\/+$/, "")}/`).toString();
 }
+
+// Stripe sustituye {CHECKOUT_SESSION_ID}; por eso la cadena se arma a mano y no con URLSearchParams.
+function checkoutReturnUrls(pagoId) {
+  return {
+    success: `${checkoutReturnUrl("/pago-exitoso")}?pago_id=${pagoId}&session_id={CHECKOUT_SESSION_ID}`,
+    cancel: `${checkoutReturnUrl("/pago-cancelado")}?pago_id=${pagoId}`
+  };
+}
+
+const returnTarget = value => {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
+};
 
 let stripeFactory = key => Stripe(key);
 
@@ -55,6 +73,18 @@ const TRANSICIONES_VALIDAS = {
 
 const aCentavos = valor => Math.round(Number(valor) * 100);
 const desdeCentavos = valor => Number((valor / 100).toFixed(2));
+
+// Intenta expirar una sesión abierta. Devuelve false si Stripe indica que ya se completó
+// (el webhook confirmará el cobro) o si no se pudo comprobar que quedó cerrada.
+async function expirarSesion(stripe, sessionId) {
+  try {
+    await stripe.checkout.sessions.expire(sessionId);
+    return true;
+  } catch {
+    const sesion = await stripe.checkout.sessions.retrieve(sessionId).catch(() => null);
+    return sesion?.status === "expired";
+  }
+}
 
 async function obtenerPagoPermitido(req, cargo, transaction) {
   if (req.userRole === ROLES.PADRE) {
@@ -144,10 +174,15 @@ async function crearSesionParaCargo(req, res) {
     });
     if (pago) {
       if (aCentavos(pago.monto) !== cantidadCentavos) {
-        await transaction.rollback();
-        return res.status(409).send({
-          message: "Ya existe un Checkout pendiente para este cargo con un importe diferente."
-        });
+        if (pago.stripeSessionId) {
+          await transaction.rollback();
+          return res.status(409).send({
+            message: "Ya existe un Checkout pendiente para este cargo con un importe diferente. Cancélalo desde Pagos para elegir otro importe.",
+            pagoId: pago.id
+          });
+        }
+        // Sin sesión en Stripe no hay nada que conciliar: se ajusta el importe del intento fallido anterior.
+        await pago.update({ monto: desdeCentavos(cantidadCentavos).toFixed(2) }, { transaction });
       }
       reutilizarSesionId = pago.stripeSessionId;
     } else {
@@ -170,14 +205,19 @@ async function crearSesionParaCargo(req, res) {
   if (reutilizarSesionId) {
     const sesion = await stripe.checkout.sessions.retrieve(reutilizarSesionId);
     if (sesion.status === "open") {
-      return res.send({
-        pagoId: pago.id,
-        sessionId: sesion.id,
-        url: sesion.url,
-        reutilizado: true
-      });
-    }
-    if (sesion.status === "complete") {
+      // Una sesión creada con otra FRONTEND_URL devolvería al usuario a una página inexistente.
+      if (returnTarget(sesion.success_url) === returnTarget(checkoutReturnUrls(pago.id).success)) {
+        return res.send({
+          pagoId: pago.id,
+          sessionId: sesion.id,
+          url: sesion.url,
+          reutilizado: true
+        });
+      }
+      if (!(await expirarSesion(stripe, sesion.id))) {
+        return res.status(409).send({ message: "El pago está en proceso de confirmación por Stripe.", pagoId: pago.id });
+      }
+    } else if (sesion.status === "complete") {
       return res.status(409).send({ message: "El pago está en proceso de confirmación por Stripe.", pagoId: pago.id });
     }
     await pago.update({ estado: "cancelado" });
@@ -185,26 +225,43 @@ async function crearSesionParaCargo(req, res) {
     return crearSesionParaCargo(req, res);
   }
 
+  const returnUrls = checkoutReturnUrls(pago.id);
+  const sessionParams = {
+    payment_method_types: ["card"],
+    mode: "payment",
+    line_items: [{
+      price_data: {
+        currency: pago.moneda,
+        product_data: { name: cargoNombre },
+        unit_amount: cantidadCentavos
+      },
+      quantity: 1
+    }],
+    success_url: returnUrls.success,
+    cancel_url: returnUrls.cancel,
+    metadata: { pagoId: String(pago.id), cargoId: String(pago.cargoId) }
+  };
+  // Stripe rechaza reutilizar una clave con parámetros distintos; el hash la hace válida tras cambios de importe o URL.
+  const paramsHash = crypto.createHash("sha256").update(JSON.stringify(sessionParams)).digest("hex").slice(0, 16);
   try {
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      line_items: [{
-        price_data: {
-          currency: pago.moneda,
-          product_data: { name: cargoNombre },
-          unit_amount: cantidadCentavos
-        },
-        quantity: 1
-      }],
-      success_url: checkoutReturnUrl("/pago-exitoso"),
-      cancel_url: checkoutReturnUrl("/pago-cancelado"),
-      metadata: { pagoId: String(pago.id), cargoId: String(cargoId) }
-    }, { idempotencyKey: `portal-pago-${pago.id}` });
+    const session = await stripe.checkout.sessions.create(sessionParams, {
+      idempotencyKey: `portal-pago-${pago.id}-${paramsHash}`
+    });
     await pago.update({ stripeSessionId: session.id });
     return res.send({ pagoId: pago.id, sessionId: session.id, url: session.url });
   } catch (stripeError) {
-    console.error("Error al crear sesión Stripe para cargo:", stripeError.message, "pagoId:", pago.id);
+    console.error("Error al crear sesión Stripe para cargo:", stripeError.type, stripeError.code, stripeError.message, "pagoId:", pago.id);
+    const reintentable = !stripeError.type || ["StripeConnectionError", "StripeAPIError", "StripeRateLimitError"].includes(stripeError.type);
+    if (!reintentable) {
+      // Stripe rechazó la solicitud: no existe sesión, se libera el cargo para que el usuario pueda reintentar.
+      await pago.update({ estado: "cancelado" }).catch(() => {});
+    }
+    if (stripeError.code === "amount_too_small") {
+      return res.status(400).send({ message: "El importe es menor al mínimo que Stripe permite cobrar en esta moneda." });
+    }
+    if (["StripeAuthenticationError", "StripePermissionError"].includes(stripeError.type)) {
+      return res.status(503).send({ message: "Los pagos en línea no están disponibles; revisa la clave STRIPE_SECRET_KEY." });
+    }
     return res.status(502).send({
       message: "No se pudo crear la sesión de pago. Puedes reintentar sin generar un cargo duplicado.",
       pagoId: pago.id
@@ -317,6 +374,11 @@ exports.webhook = async (req, res) => {
               }
             }
 
+            if (estadoNuevo === "pagado" && !(TRANSICIONES_VALIDAS[pago.estado] || []).includes(estadoNuevo)) {
+              console.error("Webhook: cobro confirmado para un pago que no está pendiente; requiere conciliación manual", {
+                eventId: event.id, pagoId, estadoActual: pago.estado
+              });
+            }
             if (estadoNuevo && (TRANSICIONES_VALIDAS[pago.estado] || []).includes(estadoNuevo)) {
               const paymentIntentId = typeof session.payment_intent === "string"
                 ? session.payment_intent
@@ -348,6 +410,63 @@ exports.webhook = async (req, res) => {
     return res.status(500).send({ message: "Error al procesar el evento." });
   }
   res.json({ received: true, ...(duplicate ? { duplicate: true } : {}) });
+};
+
+// El alumno o padre autorizado puede abandonar su Checkout pendiente (p. ej. tras volver desde Stripe
+// con "cancelar") para liberar el cargo y poder pagar otro importe sin esperar la expiración de Stripe.
+exports.cancelarCheckout = async (req, res) => {
+  const pagoId = Number(req.params.id);
+  if (!Number.isInteger(pagoId) || pagoId <= 0) {
+    return res.status(400).send({ message: "El identificador del pago no es válido." });
+  }
+  const transaction = await db.sequelize.transaction();
+  try {
+    const snapshot = await Pago.findByPk(pagoId, { transaction });
+    if (!snapshot) {
+      await transaction.rollback();
+      return res.status(404).send({ message: "Pago no encontrado." });
+    }
+    if (!(await obtenerPagoPermitido(req, snapshot, transaction))) {
+      await transaction.rollback();
+      return res.status(403).send({ message: "No puedes cancelar un pago que no pertenece a un alumno autorizado." });
+    }
+    if (snapshot.cargoId) {
+      await Cargo.findByPk(snapshot.cargoId, { transaction, lock: transaction.LOCK.UPDATE });
+    }
+    const pago = await Pago.findByPk(pagoId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (pago.estado !== "pendiente") {
+      await transaction.rollback();
+      return res.status(409).send({
+        message: pago.estado === "pagado"
+          ? "El pago ya fue confirmado y no puede cancelarse."
+          : `El pago ya está en estado '${pago.estado}'.`,
+        estado: pago.estado
+      });
+    }
+    if (pago.stripeSessionId) {
+      let stripe;
+      try {
+        stripe = getStripe();
+      } catch (error) {
+        await transaction.rollback();
+        if (error.code === PROVIDER_UNAVAILABLE) return res.status(503).send({ message: error.message });
+        throw error;
+      }
+      if (!(await expirarSesion(stripe, pago.stripeSessionId))) {
+        await transaction.rollback();
+        return res.status(409).send({
+          message: "No se pudo cancelar la sesión en Stripe; puede estar completándose. Verifica el estado en unos segundos."
+        });
+      }
+    }
+    await pago.update({ estado: "cancelado" }, { transaction });
+    await transaction.commit();
+    return res.send({ id: pago.id, estado: "cancelado", message: "El Checkout pendiente fue cancelado." });
+  } catch (error) {
+    if (!transaction.finished) await transaction.rollback();
+    console.error("Error al cancelar el Checkout:", error.message);
+    return res.status(500).send({ message: "No se pudo cancelar el Checkout." });
+  }
 };
 
 // Los pagos nunca se eliminan: forman parte del rastro contable. Un administrador solo puede

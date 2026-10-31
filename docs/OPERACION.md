@@ -45,3 +45,8 @@ debe aplicarse antes del despliegue (`/ready` responde `503` mientras falte).
 - Rollback: redeploy de la imagen/commit anterior. Antes de cambios de esquema, tomar backup.
 - Pendiente: el esquema se crea con `sequelize.sync()`; para producción formal conviene adoptar migraciones (sequelize-cli).
 - Stripe: registrar el endpoint `https://<APP_URL>/api/pagos/webhook` y los eventos `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded` y `checkout.session.async_payment_failed`. Checkout devuelve al frontend en `FRONTEND_URL`; el estado solo se confirma mediante el webhook firmado y se consulta con `GET /api/pagos`.
+
+## Pagos con Stripe: verificación de despliegue
+- Variables a verificar (solo existencia y formato, nunca valores): `STRIPE_SECRET_KEY` (`sk_test_`/`sk_live_`), `STRIPE_WEBHOOK_SECRET` (`whsec_…` del endpoint registrado, distinto al de `stripe listen`), `FRONTEND_URL` (HTTPS, sin ruta), `APP_URL`, `CORS_ORIGIN`.
+- El frontend es una SPA con `createBrowserRouter`: el hosting debe reescribir `/*` a `/index.html` (en Render Static Site: Redirects/Rewrites → `/*` → `/index.html`, acción Rewrite; `public/_redirects` solo lo respeta Netlify). Sin esa regla, el retorno de Stripe a `/pago-exitoso` y `/pago-cancelado` responde 404.
+- Las URLs de retorno incluyen `pago_id`; el estado mostrado proviene siempre de `GET /api/pagos` (actualizado solo por el webhook firmado). Si el usuario abandona Checkout, `POST /api/pagos/:id/cancelar` expira la sesión y libera el cargo.

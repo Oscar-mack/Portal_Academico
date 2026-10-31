@@ -882,6 +882,19 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Pago" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /api/pagos/{id}/cancelar:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [Pagos]
+      summary: Cancelar el Checkout pendiente propio (alumno o padre vinculado); expira la sesión en Stripe
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Checkout cancelado }
+        "403": { description: El pago no pertenece a un alumno autorizado }
+        "404": { description: Pago no encontrado }
+        "409": { description: El pago ya no está pendiente o Stripe lo está completando }
+
   /api/pagos/{id}/anular:
     parameters:
       - $ref: "#/components/parameters/Id"

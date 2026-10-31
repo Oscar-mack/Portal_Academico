@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { useNavigate } from "react-router"
+import { useNavigate, useSearchParams } from "react-router"
 import ErrorState from "../components/ErrorState"
 import LoadingState from "../components/LoadingState"
 import StatusBadge from "../components/StatusBadge"
@@ -27,45 +27,75 @@ function readPendingCheckout(): PendingCheckout | null {
   }
 }
 
+const POLL_INTERVAL_MS = 3000
+const POLL_MAX_ATTEMPTS = 20
+
 export default function PaymentReturnPage({
   outcome,
 }: {
   outcome: "success" | "cancelled"
 }) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [payment, setPayment] = useState<Pago | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
-  const pending = readPendingCheckout()
+  const [polls, setPolls] = useState(0)
+  const stored = readPendingCheckout()
+  // El identificador viaja en la URL de retorno; sessionStorage solo es respaldo.
+  const queryPagoId = Number(searchParams.get("pago_id"))
+  const pagoId = Number.isInteger(queryPagoId) && queryPagoId > 0
+    ? queryPagoId
+    : stored?.pagoId
+  const cargoId = stored && stored.pagoId === pagoId ? stored.cargoId : undefined
 
-  const verify = useCallback(async () => {
-    setLoading(true)
-    setError("")
-    try {
-      const rows = await financeService.listPayments({
-        ...(pending?.cargoId ? { cargoId: pending.cargoId } : {}),
-      })
-      const matching = pending
-        ? rows.find((item) => item.id === pending.pagoId)
-        : undefined
-      setPayment(matching ?? null)
-      if (matching?.estado === "pagado") {
-        sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+  const verify = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true)
+      setError("")
+      try {
+        if (outcome === "cancelled" && pagoId) {
+          // Libera el cargo; si el pago ya se confirmó, el backend responde 409 y se muestra el estado real.
+          await financeService.cancelCheckout(pagoId).catch(() => undefined)
+        }
+        const rows = await financeService.listPayments({
+          ...(cargoId ? { cargoId } : {}),
+        })
+        const matching = pagoId
+          ? rows.find((item) => item.id === pagoId)
+          : undefined
+        setPayment(matching ?? null)
+        if (matching?.estado === "pagado") {
+          sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+        }
+      } catch (requestError) {
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "No fue posible verificar el pago.",
+        )
+      } finally {
+        setLoading(false)
       }
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "No fue posible verificar el pago.",
-      )
-    } finally {
-      setLoading(false)
-    }
-  }, [pending?.cargoId, pending?.pagoId])
+    },
+    [outcome, pagoId, cargoId],
+  )
 
   useEffect(() => {
     verify()
   }, [verify])
+
+  // El webhook puede tardar unos segundos: se consulta de nuevo mientras el pago siga pendiente.
+  useEffect(() => {
+    if (outcome !== "success" || loading || error) return
+    if (payment && payment.estado !== "pendiente") return
+    if (polls >= POLL_MAX_ATTEMPTS) return
+    const timer = window.setTimeout(async () => {
+      await verify(true)
+      setPolls((value) => value + 1)
+    }, POLL_INTERVAL_MS)
+    return () => window.clearTimeout(timer)
+  }, [outcome, loading, error, payment, polls, verify])
 
   const verified = payment?.estado === "pagado"
 
@@ -86,7 +116,7 @@ export default function PaymentReturnPage({
           {loading ? (
             <LoadingState rows={3} />
           ) : error ? (
-            <ErrorState message={error} onRetry={verify} />
+            <ErrorState message={error} onRetry={() => verify()} />
           ) : (
             <div className="space-y-5">
               <div
@@ -146,7 +176,7 @@ export default function PaymentReturnPage({
                 {!verified && (
                   <button
                     className="flex-1 rounded-xl bg-brand px-4 py-3 text-sm font-bold text-white hover:bg-brand-dark"
-                    onClick={verify}
+                    onClick={() => { setPolls(0); verify() }}
                     type="button"
                   >
                     Verificar nuevamente

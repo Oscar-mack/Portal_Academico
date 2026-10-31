@@ -25,6 +25,7 @@ const stripeCalls = { created: [], expired: [], refunds: [] };
 let sessionCounter = 0;
 let sessionStatus = "open";
 let refundShouldFail = false;
+let sessionSuccessUrl = null;
 
 function stripeMock() {
   return {
@@ -35,7 +36,13 @@ function stripeMock() {
           sessionCounter += 1;
           return { id: `cs_test_${sessionCounter}`, url: `https://checkout.stripe.test/${sessionCounter}` };
         },
-        retrieve: async id => ({ id, status: sessionStatus, url: `https://checkout.stripe.test/${id}` }),
+        retrieve: async id => {
+          const index = Number(id.replace("cs_test_", "")) - 1;
+          return {
+            id, status: sessionStatus, url: `https://checkout.stripe.test/${id}`,
+            success_url: sessionSuccessUrl ?? stripeCalls.created[index]?.success_url
+          };
+        },
         expire: async id => {
           stripeCalls.expired.push(id);
           if (sessionStatus === "complete") throw new Error("session already complete");
@@ -221,7 +228,11 @@ test("flujo completo: checkout, webhook firmado, saldo, doble pago y nuevo cargo
   assert.equal(checkout.status, 200);
   assert.match(checkout.body.url, /^https:\/\/checkout\.stripe\.test\//);
   const sesion = stripeCalls.created.at(-1);
-  assert.equal(sesion.success_url, "https://portal.test/pago-exitoso");
+  assert.equal(
+    sesion.success_url,
+    `https://portal.test/pago-exitoso?pago_id=${checkout.body.pagoId}&session_id={CHECKOUT_SESSION_ID}`
+  );
+  assert.equal(sesion.cancel_url, `https://portal.test/pago-cancelado?pago_id=${checkout.body.pagoId}`);
   assert.equal(sesion.line_items[0].price_data.unit_amount, 10000);
   assert.equal(sesion.line_items[0].price_data.currency, "usd");
 
@@ -414,4 +425,78 @@ test("una sesión expirada se reemplaza automáticamente por un Checkout nuevo",
   assert.notEqual(segundo.body.pagoId, primero.body.pagoId);
   assert.equal((await db.pagos.findByPk(primero.body.pagoId)).estado, "cancelado");
   sessionStatus = "open";
+});
+
+test("un Checkout abierto con otra FRONTEND_URL se reemplaza en lugar de reutilizarse", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "URL antigua" })).body;
+  const primero = await iniciarCheckout(ctx.tokens.alumno1, { cargoId: cargo.id });
+  assert.equal(primero.status, 200);
+  sessionSuccessUrl = "http://localhost:5173/pago-exitoso?pago_id=1&session_id={CHECKOUT_SESSION_ID}";
+  const segundo = await iniciarCheckout(ctx.tokens.alumno1, { cargoId: cargo.id });
+  sessionSuccessUrl = null;
+  sessionStatus = "open";
+  assert.equal(segundo.status, 200, JSON.stringify(segundo.body));
+  assert.notEqual(segundo.body.pagoId, primero.body.pagoId);
+  assert.notEqual(segundo.body.reutilizado, true);
+  assert.equal((await db.pagos.findByPk(primero.body.pagoId)).estado, "cancelado");
+  assert.ok(stripeCalls.expired.includes(primero.body.sessionId));
+});
+
+test("el alumno o padre autorizado cancela su Checkout; otros reciben 403 y un pago confirmado no se cancela", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Cancelar propio" })).body;
+  sessionStatus = "open";
+  const checkout = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 30 });
+  assert.equal(checkout.status, 200);
+  const otroImporte = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 50 });
+  assert.equal(otroImporte.status, 409);
+  const url = `/api/pagos/${checkout.body.pagoId}/cancelar`;
+  assert.equal((await request(app).post(url).set(auth(ctx.tokens.padre2))).status, 403);
+  assert.equal((await request(app).post(url).set(auth(ctx.tokens.admin))).status, 403);
+  assert.equal((await request(app).post("/api/pagos/99999/cancelar").set(auth(ctx.tokens.padre1))).status, 404);
+  const ok = await request(app).post(url).set(auth(ctx.tokens.padre1));
+  assert.equal(ok.status, 200);
+  assert.equal((await db.pagos.findByPk(checkout.body.pagoId)).estado, "cancelado");
+  assert.ok(stripeCalls.expired.includes(checkout.body.sessionId));
+  assert.equal((await request(app).post(url).set(auth(ctx.tokens.padre1))).status, 409);
+
+  sessionStatus = "open";
+  const nuevo = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 50 });
+  assert.equal(nuevo.status, 200);
+  assert.equal(Number((await db.pagos.findByPk(nuevo.body.pagoId)).monto), 50);
+  assert.equal((await pagarPorWebhook(nuevo.body, cargo, 50)).status, 200);
+  assert.equal((await request(app).post(`/api/pagos/${nuevo.body.pagoId}/cancelar`).set(auth(ctx.tokens.padre1))).status, 409);
+  assert.equal((await db.pagos.findByPk(nuevo.body.pagoId)).estado, "pagado");
+});
+
+test("si Stripe rechaza la sesión el pago se libera y se puede reintentar con otro importe", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Stripe rechaza" })).body;
+  const original = stripeMock;
+  pagoController._testing.setStripeFactory(() => ({
+    ...original(),
+    checkout: { sessions: { create: async () => {
+      const error = new Error("Amount must convert to at least 50 cents");
+      error.type = "StripeInvalidRequestError";
+      error.code = "amount_too_small";
+      throw error;
+    } } }
+  }));
+  const rechazado = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 0.5 });
+  pagoController._testing.setStripeFactory(stripeMock);
+  assert.equal(rechazado.status, 400);
+  assert.match(rechazado.body.message, /mínimo/);
+  assert.equal((await db.pagos.findAll({ where: { cargoId: cargo.id } })).every(p => p.estado === "cancelado"), true);
+  const reintento = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 20 });
+  assert.equal(reintento.status, 200);
+});
+
+test("un intento sin sesión en Stripe se reajusta al nuevo importe y no bloquea el cargo", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Sin sesión" })).body;
+  await db.pagos.create({
+    alumnoId: ctx.al1, cargoId: cargo.id, concepto: cargo.concepto, monto: "10.00",
+    moneda: "usd", estado: "pendiente", metodoPago: "stripe"
+  });
+  const respuesta = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 25 });
+  assert.equal(respuesta.status, 200, JSON.stringify(respuesta.body));
+  assert.equal(Number((await db.pagos.findByPk(respuesta.body.pagoId)).monto), 25);
+  assert.equal(stripeCalls.created.at(-1).line_items[0].price_data.unit_amount, 2500);
 });

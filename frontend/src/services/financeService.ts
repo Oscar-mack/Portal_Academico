@@ -61,6 +61,11 @@ export const financeService = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  cancelCheckout: (id: number) =>
+    apiRequest<ApiMessage & { id: number; estado: string }>(
+      `/api/pagos/${id}/cancelar`,
+      { method: "POST" },
+    ),
   cancelPayment: (id: number, input: { motivo: string; reembolsar?: boolean }) =>
     apiRequest<ApiMessage & { id: number; estado: string; reembolsado: boolean }>(
       `/api/pagos/${id}/anular`,

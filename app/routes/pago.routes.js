@@ -6,6 +6,7 @@ module.exports = app => {
 	const router = require("express").Router();
 
 	router.post("/checkout", [verifyToken, hasRole(ROLES.ALUMNO, ROLES.PADRE)], pagos.crearSesion);
+	router.post("/:id/cancelar", [verifyToken, hasRole(ROLES.ALUMNO, ROLES.PADRE)], pagos.cancelarCheckout);
 	router.get("/", [verifyToken, hasRole(ROLES.ADMIN, ROLES.ALUMNO, ROLES.PADRE)], pagos.findAll);
 
 	router.patch("/:id/anular", [verifyToken, isAdmin], pagos.anular);

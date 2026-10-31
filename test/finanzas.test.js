@@ -500,3 +500,99 @@ test("un intento sin sesión en Stripe se reajusta al nuevo importe y no bloquea
   assert.equal(Number((await db.pagos.findByPk(respuesta.body.pagoId)).monto), 25);
   assert.equal(stripeCalls.created.at(-1).line_items[0].price_data.unit_amount, 2500);
 });
+
+test("cancelar: sesión ya expirada libera el cargo; sesión completa o Stripe caído no lo cancelan", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Cancelar casos Stripe" })).body;
+  sessionStatus = "open";
+  const a = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 30 });
+  const urlA = `/api/pagos/${a.body.pagoId}/cancelar`;
+
+  // Stripe ya expiró la sesión: expire() falla pero el cargo debe liberarse.
+  sessionStatus = "expired";
+  assert.equal((await request(app).post(urlA).set(auth(ctx.tokens.padre1))).status, 200);
+  assert.equal((await db.pagos.findByPk(a.body.pagoId)).estado, "cancelado");
+
+  sessionStatus = "open";
+  const b = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto: 30 });
+  const urlB = `/api/pagos/${b.body.pagoId}/cancelar`;
+
+  // Sesión completada en Stripe: no se cancela; el webhook la confirmará.
+  sessionStatus = "complete";
+  const completa = await request(app).post(urlB).set(auth(ctx.tokens.padre1));
+  assert.equal(completa.status, 409);
+  assert.equal((await db.pagos.findByPk(b.body.pagoId)).estado, "pendiente");
+
+  // Stripe inaccesible: 502 y el pago queda intacto para reintentar.
+  const original = stripeMock;
+  pagoController._testing.setStripeFactory(() => ({
+    ...original(),
+    checkout: { sessions: {
+      expire: async () => { throw new Error("network"); },
+      retrieve: async () => { throw new Error("network"); }
+    } }
+  }));
+  const caido = await request(app).post(urlB).set(auth(ctx.tokens.padre1));
+  pagoController._testing.setStripeFactory(stripeMock);
+  assert.equal(caido.status, 502);
+  assert.equal((await db.pagos.findByPk(b.body.pagoId)).estado, "pendiente");
+
+  assert.equal((await pagarPorWebhook(b.body, cargo, 30)).status, 200);
+  assert.equal((await db.pagos.findByPk(b.body.pagoId)).estado, "pagado");
+  sessionStatus = "open";
+});
+
+test("webhook: los cuatro eventos, duplicados y pagos confirmados que no se liberan", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Eventos webhook", montoOriginal: 100 })).body;
+  sessionStatus = "open";
+  const evento = (tipo, pago, sessionId, extra = {}) => enviarWebhook(tipo, {
+    id: sessionId, payment_status: "paid", amount_total: Math.round(Number(pago.monto) * 100), currency: "usd",
+    payment_intent: `pi_ev_${pago.id}`, metadata: { pagoId: String(pago.id), cargoId: String(cargo.id) }, ...extra
+  });
+  const nuevo = async monto => {
+    const r = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id, monto });
+    return { r, pago: await db.pagos.findByPk(r.body.pagoId) };
+  };
+  const estado = async id => (await db.pagos.findByPk(id)).estado;
+
+  // async_payment_failed -> fallido; luego un nuevo checkout es posible.
+  let x = await nuevo(10);
+  assert.equal((await evento("checkout.session.completed", x.pago, x.r.body.sessionId, { payment_status: "unpaid" })).status, 200);
+  assert.equal(await estado(x.pago.id), "pendiente");
+  await evento("checkout.session.async_payment_failed", x.pago, x.r.body.sessionId, { payment_status: "unpaid" });
+  assert.equal(await estado(x.pago.id), "fallido");
+
+  // completed(unpaid) + async_payment_succeeded -> pagado; fallido/expirado posteriores no lo liberan.
+  x = await nuevo(20);
+  await evento("checkout.session.completed", x.pago, x.r.body.sessionId, { payment_status: "unpaid" });
+  await evento("checkout.session.async_payment_succeeded", x.pago, x.r.body.sessionId);
+  assert.equal(await estado(x.pago.id), "pagado");
+  await evento("checkout.session.async_payment_failed", x.pago, x.r.body.sessionId);
+  await evento("checkout.session.expired", x.pago, x.r.body.sessionId);
+  assert.equal(await estado(x.pago.id), "pagado");
+  assert.equal((await db.pagos.findByPk(x.pago.id)).stripePaymentIntentId, `pi_ev_${x.pago.id}`);
+
+  // expired -> cancelado y el cargo queda libre.
+  x = await nuevo(30);
+  await evento("checkout.session.expired", x.pago, x.r.body.sessionId);
+  assert.equal(await estado(x.pago.id), "cancelado");
+
+  // Mismo evento repetido: un único registro y un solo pago (la concurrencia real se prueba en PostgreSQL).
+  x = await nuevo(40);
+  const { body, header } = firmar({
+    id: "evt_paralelo", object: "event", type: "checkout.session.completed",
+    data: { object: { id: x.r.body.sessionId, payment_status: "paid", amount_total: 4000, currency: "usd",
+      payment_intent: "pi_par", metadata: { pagoId: String(x.pago.id), cargoId: String(cargo.id) } } }
+  });
+  const respuestas = [];
+  for (let i = 0; i < 3; i += 1) {
+    respuestas.push(await request(app).post("/api/pagos/webhook")
+      .set("Content-Type", "application/json").set("Stripe-Signature", header).send(body));
+  }
+  assert.ok(respuestas.every(r => r.status === 200));
+  assert.deepEqual(respuestas.map(r => Boolean(r.body.duplicate)), [false, true, true]);
+  assert.equal(await db.eventosStripe.count({ where: { stripeEventId: "evt_paralelo" } }), 1);
+  assert.equal(await estado(x.pago.id), "pagado");
+
+  const cargos = (await request(app).get("/api/cargos").set(auth(ctx.tokens.padre1))).body;
+  assert.equal(cargos.find(c => c.id === cargo.id).montoPagado, 60);
+});

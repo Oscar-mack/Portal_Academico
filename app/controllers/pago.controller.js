@@ -74,15 +74,17 @@ const TRANSICIONES_VALIDAS = {
 const aCentavos = valor => Math.round(Number(valor) * 100);
 const desdeCentavos = valor => Number((valor / 100).toFixed(2));
 
-// Intenta expirar una sesión abierta. Devuelve false si Stripe indica que ya se completó
-// (el webhook confirmará el cobro) o si no se pudo comprobar que quedó cerrada.
+// Intenta expirar una sesión abierta. Devuelve "expired", "complete" (el webhook confirmará el cobro)
+// o "error" si Stripe no respondió y no se pudo comprobar el estado.
 async function expirarSesion(stripe, sessionId) {
   try {
     await stripe.checkout.sessions.expire(sessionId);
-    return true;
+    return "expired";
   } catch {
     const sesion = await stripe.checkout.sessions.retrieve(sessionId).catch(() => null);
-    return sesion?.status === "expired";
+    if (sesion?.status === "expired") return "expired";
+    if (sesion?.status === "complete") return "complete";
+    return "error";
   }
 }
 
@@ -203,7 +205,10 @@ async function crearSesionParaCargo(req, res) {
   }
 
   if (reutilizarSesionId) {
-    const sesion = await stripe.checkout.sessions.retrieve(reutilizarSesionId);
+    const sesion = await stripe.checkout.sessions.retrieve(reutilizarSesionId).catch(() => null);
+    if (!sesion) {
+      return res.status(502).send({ message: "No se pudo comunicar con Stripe. Intenta nuevamente en unos momentos.", pagoId: pago.id });
+    }
     if (sesion.status === "open") {
       // Una sesión creada con otra FRONTEND_URL devolvería al usuario a una página inexistente.
       if (returnTarget(sesion.success_url) === returnTarget(checkoutReturnUrls(pago.id).success)) {
@@ -214,7 +219,11 @@ async function crearSesionParaCargo(req, res) {
           reutilizado: true
         });
       }
-      if (!(await expirarSesion(stripe, sesion.id))) {
+      const cierre = await expirarSesion(stripe, sesion.id);
+      if (cierre === "error") {
+        return res.status(502).send({ message: "No se pudo comunicar con Stripe. Intenta nuevamente en unos momentos.", pagoId: pago.id });
+      }
+      if (cierre === "complete") {
         return res.status(409).send({ message: "El pago está en proceso de confirmación por Stripe.", pagoId: pago.id });
       }
     } else if (sesion.status === "complete") {
@@ -452,11 +461,16 @@ exports.cancelarCheckout = async (req, res) => {
         if (error.code === PROVIDER_UNAVAILABLE) return res.status(503).send({ message: error.message });
         throw error;
       }
-      if (!(await expirarSesion(stripe, pago.stripeSessionId))) {
+      const cierre = await expirarSesion(stripe, pago.stripeSessionId);
+      if (cierre === "complete") {
         await transaction.rollback();
         return res.status(409).send({
-          message: "No se pudo cancelar la sesión en Stripe; puede estar completándose. Verifica el estado en unos segundos."
+          message: "El pago se está confirmando en Stripe y no puede cancelarse. Verifica el estado en unos segundos."
         });
+      }
+      if (cierre === "error") {
+        await transaction.rollback();
+        return res.status(502).send({ message: "No se pudo comunicar con Stripe para cancelar el Checkout. Intenta nuevamente." });
       }
     }
     await pago.update({ estado: "cancelado" }, { transaction });

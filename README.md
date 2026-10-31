@@ -200,7 +200,8 @@ y `DB_PORT`.
 
 Debes añadir además todas las variables usadas por la aplicación, especialmente
 `JWT_SECRET`, `JWT_EXPIRES_IN`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-`CORS_ORIGIN` y `APP_URL` cuando correspondan. Nunca subas contraseñas ni
+`CORS_ORIGIN`, `APP_URL` (dominio del backend para el webhook) y `FRONTEND_URL`
+(dominio web para los retornos de Checkout). Nunca subas contraseñas ni
 credenciales al repositorio.
 
 Al iniciar, la API autentica Sequelize, ejecuta `SELECT 1` y sólo después usa

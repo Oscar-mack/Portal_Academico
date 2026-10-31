@@ -9,18 +9,21 @@ const PadreAlumno = db.padresAlumnos;
 const Cargo = db.cargos;
 const EventoStripe = db.eventosStripe;
 
-const SUCCESS_URL = process.env.APP_URL
-  ? `${process.env.APP_URL}/pago-exitoso`
-  : "http://localhost:5173/pago-exitoso";
-const CANCEL_URL = process.env.APP_URL
-  ? `${process.env.APP_URL}/pago-cancelado`
-  : "http://localhost:5173/pago-cancelado";
+function checkoutReturnUrl(path) {
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  return new URL(path, `${frontendUrl.replace(/\/+$/, "")}/`).toString();
+}
 
 let stripeFactory = key => Stripe(key);
 
 const getStripe = () => {
-  if (!process.env.STRIPE_SECRET_KEY) {
-    const error = new Error("Los pagos en línea no están disponibles porque el proveedor de pagos no está configurado.");
+  const required = ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"];
+  if (process.env.NODE_ENV === "production") required.push("APP_URL", "FRONTEND_URL");
+  const missing = required.filter(key => !process.env[key]);
+  if (missing.length > 0) {
+    const error = new Error(
+      `Los pagos en línea no están disponibles; faltan variables de configuración: ${missing.join(", ")}.`
+    );
     error.code = "PAYMENT_PROVIDER_UNAVAILABLE";
     throw error;
   }
@@ -179,8 +182,8 @@ async function crearSesionParaCargo(req, res) {
         },
         quantity: 1
       }],
-      success_url: SUCCESS_URL,
-      cancel_url: CANCEL_URL,
+      success_url: checkoutReturnUrl("/pago-exitoso"),
+      cancel_url: checkoutReturnUrl("/pago-cancelado"),
       metadata: { pagoId: String(pago.id), cargoId: String(cargoId) }
     }, { idempotencyKey: `portal-pago-${pago.id}` });
     await pago.update({ stripeSessionId: session.id });
@@ -283,18 +286,20 @@ exports.webhook = async (req, res) => {
               estadoNuevo = "fallido";
             }
 
-            if (estadoNuevo === "pagado" && pago.cargoId && session.amount_total !== null &&
-                session.amount_total !== undefined &&
-                Number(session.amount_total) !== aCentavos(pago.monto)) {
-              console.error("Webhook: monto Stripe no coincide con el pago", {
-                eventId: event.id, pagoId, expected: aCentavos(pago.monto), received: session.amount_total
-              });
-              estadoNuevo = null;
-            }
-            if (estadoNuevo === "pagado" && pago.cargoId && session.currency &&
-                session.currency.toLowerCase() !== pago.moneda.toLowerCase()) {
-              console.error("Webhook: moneda Stripe no coincide con el pago", { eventId: event.id, pagoId });
-              estadoNuevo = null;
+            if (estadoNuevo === "pagado" && pago.cargoId) {
+              const amountMatches = Number.isSafeInteger(Number(session.amount_total)) &&
+                Number(session.amount_total) === aCentavos(pago.monto);
+              const currencyMatches = typeof session.currency === "string" &&
+                session.currency.toLowerCase() === pago.moneda.toLowerCase();
+              if (!amountMatches) {
+                console.error("Webhook: monto Stripe no coincide con el pago", {
+                  eventId: event.id, pagoId, expected: aCentavos(pago.monto), received: session.amount_total
+                });
+                estadoNuevo = null;
+              } else if (!currencyMatches) {
+                console.error("Webhook: moneda Stripe no coincide con el pago", { eventId: event.id, pagoId });
+                estadoNuevo = null;
+              }
             }
 
             if (estadoNuevo && (TRANSICIONES_VALIDAS[pago.estado] || []).includes(estadoNuevo)) {

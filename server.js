@@ -71,13 +71,16 @@ function validateProductionConfiguration() {
   if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
     missing.push("JWT_SECRET (mínimo 32 caracteres)");
   }
-  for (const key of ["APP_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]) {
-    if (!process.env[key]) {
-      missing.push(key);
+  for (const key of ["APP_URL", "FRONTEND_URL"]) {
+    if (process.env[key]) {
+      try {
+        if (new URL(process.env[key]).protocol !== "https:") {
+          missing.push(`${key} (debe usar https://)`);
+        }
+      } catch {
+        missing.push(`${key} (debe ser una URL válida)`);
+      }
     }
-  }
-  if (process.env.APP_URL && !process.env.APP_URL.startsWith("https://")) {
-    missing.push("APP_URL (debe usar https://)");
   }
 
   if (missing.length > 0) {
@@ -120,5 +123,3 @@ async function startServer() {
 }
 
 startServer();
-
-

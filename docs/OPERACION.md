@@ -7,8 +7,12 @@
 | Pruebas (CI) | test | SQLite en memoria (automático) | simulado | `npm test` |
 | Producción | production | PostgreSQL administrado | claves `sk_live_` | CORS exacto, HTTPS, secretos en el gestor del hosting |
 
-En producción `server.js` se niega a iniciar si falta `JWT_SECRET` (>=32 caracteres), `CORS_ORIGIN` (distinto de `*`),
-`APP_URL` (https), `STRIPE_SECRET_KEY` o `STRIPE_WEBHOOK_SECRET`. Nunca versionar `.env`.
+En producción `server.js` se niega a iniciar si falta `JWT_SECRET` (>=32 caracteres) o
+`CORS_ORIGIN` (distinto de `*`). Stripe es opcional para que la API académica siga
+disponible: mientras falte `STRIPE_SECRET_KEY` o `STRIPE_WEBHOOK_SECRET`, Checkout
+responde `503` con las variables faltantes. Para habilitar pagos también configura
+`APP_URL` (URL HTTPS del backend para el webhook) y `FRONTEND_URL` (URL HTTPS de la
+aplicación web). Nunca versionar `.env`.
 
 ## Backups y restauración (PostgreSQL)
 - Backup diario automático del proveedor (retención mínima 7 días) + `pg_dump` semanal guardado fuera del proveedor (retención 30 días):
@@ -29,7 +33,7 @@ En producción `server.js` se niega a iniciar si falta `JWT_SECRET` (>=32 caract
 ## Despliegue y rollback
 - Contenedor: `docker build -t portal-api .` (ver `Dockerfile`); alternativa Render con `render.yaml`.
 - CI en `.github/workflows/ci.yml` ejecuta `npm test` en cada push/PR; desplegar solo con CI en verde.
-- HTTPS/TLS lo termina el proveedor; `APP_URL` y `CORS_ORIGIN` deben ser https.
+- HTTPS/TLS lo termina el proveedor; `APP_URL`, `FRONTEND_URL` y `CORS_ORIGIN` deben corresponder a dominios HTTPS.
 - Rollback: redeploy de la imagen/commit anterior. Antes de cambios de esquema, tomar backup.
 - Pendiente: el esquema se crea con `sequelize.sync()`; para producción formal conviene adoptar migraciones (sequelize-cli).
-- Stripe: registrar el endpoint `https://<APP_URL>/api/pagos/webhook` y el evento `checkout.session.completed` y `checkout.session.expired`.
+- Stripe: registrar el endpoint `https://<APP_URL>/api/pagos/webhook` y los eventos `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded` y `checkout.session.async_payment_failed`. Checkout devuelve al frontend en `FRONTEND_URL`; el estado solo se confirma mediante el webhook firmado y se consulta con `GET /api/pagos`.

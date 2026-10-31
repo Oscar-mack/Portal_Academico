@@ -151,12 +151,18 @@ test("un padre solo consulta alumnos vinculados", async () => {
 
 test("alumnos y padres vinculados pueden iniciar checkout y consultar solo sus pagos", async () => {
   const stripeKey = process.env.STRIPE_SECRET_KEY;
+  const previousAppUrl = process.env.APP_URL;
+  const previousFrontendUrl = process.env.FRONTEND_URL;
+  process.env.APP_URL = "https://api.portal.test";
+  process.env.FRONTEND_URL = "https://portal.test";
   const cargoIds = [];
   let sessionNumber = 0;
+  const checkoutRequests = [];
   pagoController._testing.setStripeFactory(() => ({
     checkout: {
       sessions: {
-        create: async () => {
+        create: async input => {
+          checkoutRequests.push(input);
           sessionNumber += 1;
           return {
             id: `cs_test_checkout_${sessionNumber}`,
@@ -183,6 +189,8 @@ test("alumnos y padres vinculados pueden iniciar checkout y consultar solo sus p
       .send({ cargoId: cargoAlumno.id });
     assert.equal(checkoutAlumno.status, 200, `${JSON.stringify(checkoutAlumno.body)} ${logs.slice(-3).join(" | ")}`);
     assert.equal(checkoutAlumno.body.url, "https://checkout.stripe.test/session/1");
+    assert.equal(checkoutRequests[0].success_url, "https://portal.test/pago-exitoso");
+    assert.equal(checkoutRequests[0].cancel_url, "https://portal.test/pago-cancelado");
 
     const cargoPadre = await crearCargo(ctx.al1);
     const checkoutPadre = await request(app).post("/api/pagos/checkout")
@@ -208,6 +216,10 @@ test("alumnos y padres vinculados pueden iniciar checkout y consultar solo sus p
     );
   } finally {
     process.env.STRIPE_SECRET_KEY = stripeKey;
+    if (previousAppUrl === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = previousAppUrl;
+    if (previousFrontendUrl === undefined) delete process.env.FRONTEND_URL;
+    else process.env.FRONTEND_URL = previousFrontendUrl;
     pagoController._testing.resetStripeFactory();
     if (cargoIds.length) {
       await db.pagos.destroy({ where: { cargoId: cargoIds } });
@@ -218,6 +230,7 @@ test("alumnos y padres vinculados pueden iniciar checkout y consultar solo sus p
 
 test("checkout informa cuando Stripe no está configurado", async () => {
   const stripeKey = process.env.STRIPE_SECRET_KEY;
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   const cargo = await db.cargos.create({
     alumnoId: ctx.al1,
     concepto: "Cargo de prueba sin proveedor",
@@ -231,9 +244,18 @@ test("checkout informa cuando Stripe no está configurado", async () => {
       .set(auth(ctx.tokens.alumno1))
       .send({ cargoId: cargo.id });
     assert.equal(response.status, 503);
-    assert.match(response.body.message, /proveedor de pagos no está configurado/);
+    assert.match(response.body.message, /STRIPE_SECRET_KEY/);
+
+    process.env.STRIPE_SECRET_KEY = stripeKey;
+    delete process.env.STRIPE_WEBHOOK_SECRET;
+    const webhookNoConfigurado = await request(app).post("/api/pagos/checkout")
+      .set(auth(ctx.tokens.alumno1))
+      .send({ cargoId: cargo.id });
+    assert.equal(webhookNoConfigurado.status, 503);
+    assert.match(webhookNoConfigurado.body.message, /STRIPE_WEBHOOK_SECRET/);
   } finally {
     process.env.STRIPE_SECRET_KEY = stripeKey;
+    process.env.STRIPE_WEBHOOK_SECRET = webhookSecret;
     await db.cargos.destroy({ where: { id: cargo.id } });
   }
 });
@@ -732,6 +754,27 @@ test("tareas, materiales y entregas se limitan a inscripción y docente autoriza
       .set(auth(ctx.tokens.cat1)).send(taskInput);
     assert.equal(created.status, 201, JSON.stringify(created.body));
 
+    const storageKeys = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"];
+    const storageValues = Object.fromEntries(storageKeys.map(key => [key, process.env[key]]));
+    storageKeys.forEach(key => delete process.env[key]);
+    storage.ensureConfigured = originalStorage.ensureConfigured;
+    try {
+      const noStorage = await request(app).post(`/api/tareas/${created.body.id}/adjuntos`)
+        .set(auth(ctx.tokens.cat1))
+        .attach("file", Buffer.from("%PDF-1.7\nmaterial"), {
+          filename: "sin-r2.pdf",
+          contentType: "application/pdf"
+        });
+      assert.equal(noStorage.status, 503);
+      assert.match(noStorage.body.message, /almacenamiento académico no está configurado/);
+    } finally {
+      storageKeys.forEach(key => {
+        if (storageValues[key] === undefined) delete process.env[key];
+        else process.env[key] = storageValues[key];
+      });
+      storage.ensureConfigured = () => {};
+    }
+
     const pending = await request(app).get(`/api/tareas?periodoAcademicoId=${period.body.id}`)
       .set(auth(ctx.tokens.alumno1));
     assert.equal(pending.status, 200);
@@ -1037,6 +1080,56 @@ test("webhook no marca como pagado si Stripe no confirma el cobro y cancela sesi
     .set("Content-Type", "application/json").set("Stripe-Signature", b.header).send(b.body);
   await expirado.reload();
   assert.equal(expirado.estado, "cancelado");
+});
+
+test("webhook exige monto y moneda exactos antes de confirmar pagos asociados a cargos", async () => {
+  const cargo = await db.cargos.create({
+    alumnoId: ctx.al1,
+    concepto: "Cargo para validar webhook",
+    montoOriginal: "25.00",
+    moneda: "GTQ",
+    fechaEmision: "2026-10-01"
+  });
+  try {
+    for (const [index, fields] of [
+      { amount_total: 2499, currency: "gtq" },
+      { amount_total: 2500 },
+      { amount_total: 2500, currency: "usd" }
+    ].entries()) {
+      const pago = await db.pagos.create({
+        alumnoId: ctx.al1,
+        cargoId: cargo.id,
+        concepto: cargo.concepto,
+        monto: "25.00",
+        moneda: "gtq",
+        estado: "pendiente",
+        stripeSessionId: `cs-webhook-validacion-${index}`
+      });
+      const firmado = firmar({
+        id: `evt-webhook-validacion-${index}`,
+        object: "event",
+        type: "checkout.session.completed",
+        data: { object: {
+          id: pago.stripeSessionId,
+          payment_status: "paid",
+          metadata: { pagoId: String(pago.id), cargoId: String(cargo.id) },
+          ...fields
+        } }
+      });
+      const response = await request(app).post("/api/pagos/webhook")
+        .set("Content-Type", "application/json")
+        .set("Stripe-Signature", firmado.header)
+        .send(firmado.body);
+      assert.equal(response.status, 200);
+      await pago.reload();
+      assert.equal(pago.estado, "pendiente");
+    }
+  } finally {
+    const pagos = await db.pagos.findAll({ where: { cargoId: cargo.id }, attributes: ["id"] });
+    await db.eventosStripe.destroy({ where: { pagoId: pagos.map(pago => pago.id) } });
+    await db.pagos.destroy({ where: { cargoId: cargo.id } });
+    await cargo.destroy();
+  }
 });
 
 test("los abonos confirmados actualizan saldo y solvencia; webhooks persistentes son idempotentes", async () => {

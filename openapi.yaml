@@ -882,6 +882,19 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Pago" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /api/pagos/{id}/cancelar:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [Pagos]
+      summary: Cancelar el Checkout pendiente propio (alumno o padre vinculado); expira la sesión en Stripe
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Checkout cancelado }
+        "403": { description: El pago no pertenece a un alumno autorizado }
+        "404": { description: Pago no encontrado }
+        "409": { description: El pago ya no está pendiente o Stripe lo está completando }
+
   /api/pagos/{id}/anular:
     parameters:
       - $ref: "#/components/parameters/Id"
@@ -891,7 +904,8 @@ paths:
       description: |
         Los pagos no se eliminan (`DELETE` responde 405). `pendiente` pasa a `cancelado` y expira
         la sesión de Stripe; `pagado` pasa a `anulado` y deja de contar en el saldo. Con
-        `reembolsar: true` se crea además un Refund en Stripe.
+        `reembolsar: true` crea además un Refund; el pago solo se anula cuando Stripe confirma
+        que el reembolso completo tuvo éxito. Los eventos `refund.*` reconcilian fallos locales.
       requestBody:
         required: true
         content:
@@ -904,6 +918,7 @@ paths:
                 reembolsar: { type: boolean }
       responses:
         "200": { description: Pago cancelado o anulado }
+        "202": { description: Reembolso solicitado, pendiente de confirmación de Stripe }
         "400": { description: Motivo ausente o reembolso no aplicable }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Pago no encontrado }
@@ -917,7 +932,9 @@ paths:
         Uso exclusivo de Stripe. Verifica la cabecera `Stripe-Signature`. Es idempotente:
         Los eventos se registran en la base de datos en la misma transacción del pago.
         `completed` confirmado marca `pagado`, `expired` marca `cancelado` y
-        `async_payment_failed` marca `fallido`. Repetir un `event.id` no duplica el pago.
+        `async_payment_failed` marca `fallido`. `refund.created`, `refund.updated` y
+        `refund.failed` sincronizan reembolsos completos con el historial local.
+        Repetir un `event.id` no duplica el pago.
       security: []
       parameters:
         - name: Stripe-Signature

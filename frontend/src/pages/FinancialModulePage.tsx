@@ -308,6 +308,25 @@ export default function FinancialModulePage({
     }
   }
 
+  async function cancelOwnCheckout(payment: Pago) {
+    setSaving(true)
+    setError("")
+    try {
+      const result = await financeService.cancelCheckout(payment.id)
+      sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+      setNotice(result.message ?? "El Checkout pendiente fue cancelado.")
+      await load()
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "No fue posible cancelar el Checkout.",
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function submitVoid(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!voiding) return
@@ -685,7 +704,7 @@ export default function FinancialModulePage({
                   <th className="px-4 py-3.5">Método</th>
                   <th className="px-4 py-3.5">Fecha</th>
                   <th className="px-6 py-3.5">Estado</th>
-                  {canManage && (
+                  {(canManage || canCheckout) && (
                     <th className="px-6 py-3.5 text-right">Acciones</th>
                   )}
                 </tr>
@@ -721,6 +740,20 @@ export default function FinancialModulePage({
                         {payment.estado}
                       </StatusBadge>
                     </td>
+                    {canCheckout && (
+                      <td className="px-6 py-4 text-right">
+                        {payment.estado === "pendiente" && (
+                          <button
+                            className="rounded-lg border border-line px-3 py-2 text-xs font-bold text-muted hover:bg-canvas disabled:opacity-50"
+                            disabled={saving}
+                            onClick={() => cancelOwnCheckout(payment)}
+                            type="button"
+                          >
+                            Cancelar checkout
+                          </button>
+                        )}
+                      </td>
+                    )}
                     {canManage && (
                       <td className="px-6 py-4 text-right">
                         {payment.estado === "pendiente" ||

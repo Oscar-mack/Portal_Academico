@@ -148,7 +148,7 @@ export async function apiRequest<T = unknown>(
     response = await fetch(`${API_URL}${path}`, { ...options, headers })
   } catch {
     throw new ApiError(
-      "No fue posible conectar con el servidor. Verifica que la API esté disponible y permita el origen del portal.",
+      "No fue posible conectar con el servidor: la solicitud no recibió respuesta HTTP. Verifica que la API esté activa y que CORS_ORIGIN incluya el origen del portal. Los errores 401, 403 y 404 se informan por separado.",
       0,
     )
   }
@@ -156,13 +156,33 @@ export async function apiRequest<T = unknown>(
   const payload = await parseResponse(response)
 
   if (!response.ok) {
-    const message =
-      readString(payload, ["message", "error", "mensaje"]) ??
-      `La solicitud no pudo completarse (${response.status}).`
-    throw new ApiError(message, response.status)
+    const serverMessage = readString(payload, ["message", "error", "mensaje"])
+    throw new ApiError(
+      describeHttpError(response.status, serverMessage, path),
+      response.status,
+    )
   }
 
   return payload as T
+}
+
+function describeHttpError(
+  status: number,
+  serverMessage: string | undefined,
+  path: string,
+) {
+  const endpoint = path.split("?")[0]
+
+  // El 404 genérico de Express significa que la ruta no existe en el backend publicado.
+  if (status === 404 && serverMessage && /^ruta no encontrada/i.test(serverMessage)) {
+    return `El servidor no tiene disponible el servicio ${endpoint} (404). El backend publicado parece desactualizado respecto al portal; solicita al administrador técnico verificar el despliegue.`
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return `El servidor no está disponible temporalmente (${status}). Espera unos segundos y reintenta.`
+  }
+  return (
+    serverMessage ?? `La solicitud no pudo completarse (${status}).`
+  )
 }
 
 export function withQuery(

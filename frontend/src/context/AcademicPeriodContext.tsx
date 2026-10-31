@@ -48,12 +48,24 @@ export function AcademicPeriodProvider({
     setError("")
 
     try {
-      const [nextCycles, nextPeriods] = await Promise.all([
+      // Los períodos son indispensables para todos los roles; los ciclos solo
+      // complementan las pantallas administrativas y no deben bloquearlos.
+      const [cyclesResult, periodsResult] = await Promise.allSettled([
         academicPeriodsService.listCycles(),
         academicPeriodsService.listPeriods(),
       ])
+      if (periodsResult.status === "rejected") throw periodsResult.reason
+      const nextCycles = cyclesResult.status === "fulfilled" ? cyclesResult.value : []
+      const nextPeriods = periodsResult.value
       setCycles(nextCycles)
       setPeriods(nextPeriods)
+      if (cyclesResult.status === "rejected") {
+        setError(
+          cyclesResult.reason instanceof Error
+            ? cyclesResult.reason.message
+            : "No fue posible consultar los ciclos académicos.",
+        )
+      }
 
       const storedValue = sessionStorage.getItem(storageKey)
       const storedId = storedValue ? Number(storedValue) : null

@@ -30,6 +30,7 @@ export default function StudentEvaluationsPage() {
         }),
       )
     } catch (requestError) {
+      setItems([])
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -78,7 +79,9 @@ export default function StudentEvaluationsPage() {
       count={
         loading
           ? "Consultando tus evaluaciones..."
-          : `${visibleItems.length} evaluaciones visibles`
+          : error
+            ? "No se pudieron consultar tus evaluaciones"
+            : `${visibleItems.length} evaluaciones visibles`
       }
       description="Consulta las evaluaciones de tus cursos. Las notas finales publicadas están en Mis calificaciones."
       title="Mis evaluaciones"
@@ -124,7 +127,7 @@ export default function StudentEvaluationsPage() {
       )}
       {loading ? (
         <LoadingState />
-      ) : visibleItems.length ? (
+      ) : error ? null : visibleItems.length ? (
         <DataTable minWidth="min-w-[48rem]">
           <thead>
             <tr className="border-b border-line bg-canvas/45 text-[0.68rem] font-bold uppercase tracking-wider text-muted">

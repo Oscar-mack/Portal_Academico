@@ -207,6 +207,16 @@ exports.update = async (req, res) => {
       periodoAcademicoId !== asignacion.periodoAcademicoId ||
       periodo !== asignacion.periodo;
     if (cambiaronReferencias) {
+      if (asignacion.periodoAcademicoId && await db.tareas.count({
+        where: {
+          cursoId: asignacion.cursoId,
+          periodoAcademicoId: asignacion.periodoAcademicoId
+        },
+        transaction: t
+      })) {
+        await t.rollback();
+        return res.status(409).send({ message: "No se puede cambiar una inscripción relacionada con tareas; se conserva el historial académico." });
+      }
       const notaWhere = {
         alumnoId: asignacion.alumnoId,
         cursoId: asignacion.cursoId,
@@ -310,6 +320,15 @@ exports.delete = async (req, res) => {
         : { periodo: asignacion.periodo })
     };
     const notaExistente = await db.notas.count({ where: notaWhere, transaction: t });
+    const tareasExistentes = asignacion.periodoAcademicoId
+      ? await db.tareas.count({
+        where: {
+          cursoId: asignacion.cursoId,
+          periodoAcademicoId: asignacion.periodoAcademicoId
+        },
+        transaction: t
+      })
+      : 0;
     let calificacionesExistentes = 0;
     if (asignacion.periodoAcademicoId) {
       const evaluaciones = await db.evaluaciones.findAll({
@@ -327,9 +346,11 @@ exports.delete = async (req, res) => {
         });
       }
     }
-    if (notaExistente || calificacionesExistentes) {
+    if (notaExistente || calificacionesExistentes || tareasExistentes) {
       await t.rollback();
-      return res.status(409).send({ message: "No se puede eliminar una inscripción con calificaciones registradas." });
+      return res.status(409).send({ message: tareasExistentes
+        ? "No se puede eliminar una inscripción relacionada con tareas; se conserva el historial académico."
+        : "No se puede eliminar una inscripción con calificaciones registradas." });
     }
     await asignacion.destroy({ transaction: t });
     await t.commit();

@@ -8,6 +8,7 @@ import type { DashboardResponse } from "../types/api"
 
 const AcademicPeriodsPage = lazy(() => import("./admin/AcademicPeriodsPage"))
 const AcademicAssignmentsPage = lazy(() => import("./AcademicAssignmentsPage"))
+const AcademicWorkPage = lazy(() => import("./AcademicWorkPage"))
 const AlumnosPage = lazy(() => import("./admin/AlumnosPage"))
 const CatedraticosPage = lazy(() => import("./admin/CatedraticosPage"))
 const CursosPage = lazy(() => import("./admin/CursosPage"))
@@ -182,6 +183,7 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
       { label: "Asignaciones", icon: "assignments", endpoint: "/api/asignaciones-curso" },
       { label: "Horarios docentes", icon: "calendar", endpoint: "/api/horarios-catedratico" },
       { label: "Evaluaciones", icon: "assignments", endpoint: "/api/evaluaciones" },
+      { label: "Tareas y materiales", icon: "assignments", endpoint: "/api/tareas" },
       { label: "Control de notas", icon: "grades", endpoint: "/api/notas" },
       { label: "Reportes", icon: "reports", endpoint: "/api/reportes/indicadores" },
       { label: "Cargos y solvencia", icon: "payments", endpoint: "/api/cargos" },
@@ -207,6 +209,7 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
       { label: "Mis alumnos", icon: "students", endpoint: "/api/alumnos" },
       { label: "Mi horario", icon: "calendar", endpoint: "/api/horarios-catedratico" },
       { label: "Evaluaciones", icon: "assignments", endpoint: "/api/evaluaciones" },
+      { label: "Tareas", icon: "assignments", endpoint: "/api/tareas" },
       { label: "Calificaciones", icon: "grades", endpoint: "/api/evaluaciones" },
       { label: "Notas finales", icon: "grades", endpoint: "/api/notas" },
       { label: "Reportes", icon: "reports" },
@@ -229,6 +232,7 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
       { label: "Inicio", icon: "home" },
       { label: "Mis cursos", icon: "courses", endpoint: "/api/asignaciones-curso" },
       { label: "Evaluaciones", icon: "assignments", endpoint: "/api/evaluaciones" },
+      { label: "Tareas", icon: "assignments", endpoint: "/api/tareas" },
       { label: "Mis calificaciones", icon: "grades", endpoint: "/api/notas" },
       { label: "Mi horario", icon: "calendar", endpoint: "/api/horarios-catedratico" },
       { label: "Boleta académica", icon: "reports" },
@@ -723,6 +727,8 @@ export default function DashboardPage({
               <SchedulesPage user={user} />
             ) : user.rol === "admin" && activeNav === "Evaluaciones" ? (
               <EvaluationsPage user={user} />
+            ) : user.rol === "admin" && activeNav === "Tareas y materiales" ? (
+              <AcademicWorkPage user={user} />
             ) : user.rol === "admin" && activeNav === "Control de notas" ? (
               <NotesPage user={user} />
             ) : user.rol === "admin" && activeNav === "Reportes" ? (
@@ -746,6 +752,8 @@ export default function DashboardPage({
             ) : user.rol === "catedratico" &&
               (activeNav === "Evaluaciones" || activeNav === "Calificaciones") ? (
               <EvaluationsPage user={user} />
+            ) : user.rol === "catedratico" && activeNav === "Tareas" ? (
+              <AcademicWorkPage user={user} />
             ) : user.rol === "catedratico" && activeNav === "Notas finales" ? (
               <NotesPage user={user} />
             ) : user.rol === "catedratico" && activeNav === "Reportes" ? (
@@ -759,6 +767,8 @@ export default function DashboardPage({
               <AcademicAssignmentsPage user={user} />
             ) : user.rol === "alumno" && activeNav === "Evaluaciones" ? (
               <StudentEvaluationsPage />
+            ) : user.rol === "alumno" && activeNav === "Tareas" ? (
+              <AcademicWorkPage user={user} />
             ) : user.rol === "alumno" && activeNav === "Mi horario" ? (
               <SchedulesPage user={user} />
             ) : user.rol === "alumno" &&

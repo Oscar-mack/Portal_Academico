@@ -18,6 +18,12 @@ const REQUIRED_SCHEMA = {
   evaluaciones: ["cursoId", "catedraticoId", "periodoAcademicoId", "puntajeMaximo"],
   calificaciones_evaluacion: ["evaluacionId", "alumnoId", "valor"],
   auditoria_notas: ["notaId", "usuarioId", "valorAnterior", "valorNuevo"],
+  tareas: ["cursoId", "catedraticoId", "periodoAcademicoId", "titulo", "fechaPublicacion", "fechaLimite"],
+  archivos_academicos: ["storageKey", "nombreOriginal", "mimeType", "sizeBytes", "sha256", "subidoPorUsuarioId"],
+  adjuntos_tarea: ["tareaId", "archivoId"],
+  materiales_curso: ["cursoId", "catedraticoId", "periodoAcademicoId", "archivoId", "titulo"],
+  entregas_tarea: ["tareaId", "alumnoId", "archivoId", "entregadaEn"],
+  auditoria_tareas: ["tareaId", "archivoId", "usuarioId", "accion"],
   cargos: ["alumnoId", "montoOriginal", "moneda"],
   pagos: ["cargoId", "stripePaymentIntentId", "metodoPago"],
   eventos_stripe: ["stripeEventId", "tipo", "pagoId"],
@@ -29,6 +35,9 @@ const REQUIRED_TRIGGERS = [
   "calificaciones_evaluacion_validar_biu",
   "evaluaciones_maximo_calificaciones_bu",
   "auditoria_notas_inmutable_bud",
+  "tareas_validar_contexto_biu",
+  "entregas_tarea_validar_bi",
+  "auditoria_tareas_inmutable_bud",
   "pagos_validar_cargo_biu",
   "cargos_proteger_pagos_bu",
   "cargos_no_delete_con_historial_bd"
@@ -133,6 +142,9 @@ require("./app/routes/pago.routes")(app);
 require("./app/routes/cicloAcademico.routes")(app);
 require("./app/routes/periodoAcademico.routes")(app);
 require("./app/routes/evaluacion.routes")(app);
+require("./app/routes/tarea.routes")(app);
+require("./app/routes/materialCurso.routes")(app);
+require("./app/routes/archivoAcademico.routes")(app);
 require("./app/routes/cargo.routes")(app);
 require("./app/routes/dashboard.routes")(app);
 require("./app/routes/requisitoSolvencia.routes")(app);

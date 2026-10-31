@@ -56,6 +56,12 @@ db.periodosAcademicos = require("./periodoAcademico.model.js")(sequelize, Sequel
 db.evaluaciones = require("./evaluacion.model.js")(sequelize, Sequelize);
 db.calificacionesEvaluacion = require("./calificacionEvaluacion.model.js")(sequelize, Sequelize);
 db.auditoriaNotas = require("./auditoriaNota.model.js")(sequelize, Sequelize);
+db.tareas = require("./tarea.model.js")(sequelize, Sequelize);
+db.archivosAcademicos = require("./archivoAcademico.model.js")(sequelize, Sequelize);
+db.adjuntosTarea = require("./adjuntoTarea.model.js")(sequelize, Sequelize);
+db.materialesCurso = require("./materialCurso.model.js")(sequelize, Sequelize);
+db.entregasTarea = require("./entregaTarea.model.js")(sequelize, Sequelize);
+db.auditoriaTareas = require("./auditoriaTarea.model.js")(sequelize, Sequelize);
 db.cargos = require("./cargo.model.js")(sequelize, Sequelize);
 db.eventosStripe = require("./eventoStripe.model.js")(sequelize, Sequelize);
 db.requisitosSolvenciaDocumentos = require("./requisitoSolvenciaDocumento.model.js")(sequelize, Sequelize);
@@ -126,6 +132,31 @@ db.evaluaciones.hasMany(db.calificacionesEvaluacion, { foreignKey: "evaluacionId
 db.calificacionesEvaluacion.belongsTo(db.evaluaciones, { foreignKey: "evaluacionId", as: "evaluacion" });
 db.alumnos.hasMany(db.calificacionesEvaluacion, { foreignKey: "alumnoId", as: "calificacionesEvaluacion" });
 db.calificacionesEvaluacion.belongsTo(db.alumnos, { foreignKey: "alumnoId", as: "alumno" });
+
+db.cursos.hasMany(db.tareas, { foreignKey: "cursoId", as: "tareas" });
+db.tareas.belongsTo(db.cursos, { foreignKey: "cursoId", as: "curso" });
+db.catedraticos.hasMany(db.tareas, { foreignKey: "catedraticoId", as: "tareas" });
+db.tareas.belongsTo(db.catedraticos, { foreignKey: "catedraticoId", as: "catedratico" });
+db.periodosAcademicos.hasMany(db.tareas, { foreignKey: "periodoAcademicoId", as: "tareas" });
+db.tareas.belongsTo(db.periodosAcademicos, { foreignKey: "periodoAcademicoId", as: "periodoAcademico" });
+db.tareas.hasMany(db.adjuntosTarea, { foreignKey: "tareaId", as: "adjuntos" });
+db.adjuntosTarea.belongsTo(db.tareas, { foreignKey: "tareaId", as: "tarea" });
+db.adjuntosTarea.belongsTo(db.archivosAcademicos, { foreignKey: "archivoId", as: "archivo" });
+db.archivosAcademicos.hasOne(db.adjuntosTarea, { foreignKey: "archivoId", as: "adjuntoTarea" });
+db.cursos.hasMany(db.materialesCurso, { foreignKey: "cursoId", as: "materiales" });
+db.materialesCurso.belongsTo(db.cursos, { foreignKey: "cursoId", as: "curso" });
+db.materialesCurso.belongsTo(db.periodosAcademicos, { foreignKey: "periodoAcademicoId", as: "periodoAcademico" });
+db.materialesCurso.belongsTo(db.catedraticos, { foreignKey: "catedraticoId", as: "catedratico" });
+db.materialesCurso.belongsTo(db.archivosAcademicos, { foreignKey: "archivoId", as: "archivo" });
+db.archivosAcademicos.hasOne(db.materialesCurso, { foreignKey: "archivoId", as: "materialCurso" });
+db.tareas.hasMany(db.entregasTarea, { foreignKey: "tareaId", as: "entregas" });
+db.entregasTarea.belongsTo(db.tareas, { foreignKey: "tareaId", as: "tarea" });
+db.entregasTarea.belongsTo(db.alumnos, { foreignKey: "alumnoId", as: "alumno" });
+db.entregasTarea.belongsTo(db.archivosAcademicos, { foreignKey: "archivoId", as: "archivo" });
+db.archivosAcademicos.hasOne(db.entregasTarea, { foreignKey: "archivoId", as: "entrega" });
+db.auditoriaTareas.belongsTo(db.tareas, { foreignKey: "tareaId", as: "tarea" });
+db.auditoriaTareas.belongsTo(db.archivosAcademicos, { foreignKey: "archivoId", as: "archivo" });
+db.auditoriaTareas.belongsTo(db.usuarios, { foreignKey: "usuarioId", as: "usuario" });
 
 db.notas.hasMany(db.auditoriaNotas, { foreignKey: "notaId", as: "historial" });
 db.auditoriaNotas.belongsTo(db.notas, { foreignKey: "notaId", as: "nota" });

@@ -11,6 +11,7 @@ const Stripe = require("stripe");
 
 const db = require("../app/models");
 const app = require("../app");
+const storage = require("../app/services/r2Storage.js");
 
 const PASSWORD = "ClaveSegura123";
 const ctx = {};
@@ -434,6 +435,172 @@ test("períodos y evaluaciones calculan notas finales sin alterar períodos hist
   assert.equal((await registrar(examen.body.id, 52)).status, 409);
   assert.equal((await request(app).delete(`/api/horarios-catedratico/${horario.body.id}`)
     .set(auth(ctx.tokens.admin))).status, 409);
+});
+
+test("tareas, materiales y entregas se limitan a inscripción y docente autorizados", async () => {
+  const uploadedObjects = new Map();
+  const originalStorage = {
+    ensureConfigured: storage.ensureConfigured,
+    uploadObject: storage.uploadObject,
+    removeObject: storage.removeObject,
+    createDownloadUrl: storage.createDownloadUrl
+  };
+  storage.ensureConfigured = () => {};
+  storage.uploadObject = async (key, stream) => {
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    uploadedObjects.set(key, Buffer.concat(chunks));
+  };
+  storage.removeObject = async key => uploadedObjects.delete(key);
+  storage.createDownloadUrl = async key => `https://private-bucket.invalid/${key}?signed=test`;
+
+  try {
+    const cycle = await db.ciclosAcademicos.findOne({ where: { nombre: "Ciclo de pruebas" } });
+    assert.ok(cycle);
+    const period = await request(app).post("/api/periodos").set(auth(ctx.tokens.admin))
+      .send({
+        cicloAcademicoId: cycle.id,
+        nombre: "Período de tareas",
+        tipo: "trimestre",
+        fechaInicio: "2026-10-01",
+        fechaFin: "2026-12-31"
+      });
+    assert.equal(period.status, 201);
+    const schedule = await request(app).post("/api/horarios-catedratico")
+      .set(auth(ctx.tokens.admin))
+      .send({
+        catedraticoId: ctx.cat1,
+        cursoId: ctx.c4,
+        dia: "Viernes",
+        horaInicio: "08:00",
+        horaFin: "09:00",
+        periodoAcademicoId: period.body.id
+      });
+    assert.equal(schedule.status, 201);
+    const enrollment = await request(app).post("/api/asignaciones-curso")
+      .set(auth(ctx.tokens.admin))
+      .send({ alumnoId: ctx.al1, cursoId: ctx.c4, periodoAcademicoId: period.body.id });
+    assert.equal(enrollment.status, 200);
+
+    const taskInput = {
+      cursoId: ctx.c4,
+      periodoAcademicoId: period.body.id,
+      titulo: "Informe de laboratorio",
+      descripcion: "Entrega individual del informe.",
+      instrucciones: "Incluye resultados, análisis y conclusiones.",
+      fechaPublicacion: "2026-10-01T08:00:00.000Z",
+      fechaLimite: "2026-11-15T08:00:00.000Z"
+    };
+    const unauthorizedCreate = await request(app).post("/api/tareas")
+      .set(auth(ctx.tokens.cat2)).send(taskInput);
+    assert.equal(unauthorizedCreate.status, 403);
+    const created = await request(app).post("/api/tareas")
+      .set(auth(ctx.tokens.cat1)).send(taskInput);
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const pending = await request(app).get(`/api/tareas?periodoAcademicoId=${period.body.id}`)
+      .set(auth(ctx.tokens.alumno1));
+    assert.equal(pending.status, 200);
+    assert.equal(pending.body.length, 1);
+    assert.equal(pending.body[0].estadoEntrega, "pendiente");
+    assert.equal(pending.body[0].curso.id, ctx.c4);
+    assert.equal((await request(app).get(`/api/tareas/${created.body.id}`)
+      .set(auth(ctx.tokens.alumno2))).status, 403);
+    assert.equal((await request(app).get(`/api/tareas/${created.body.id}/entregas`)
+      .set(auth(ctx.tokens.alumno1))).status, 403);
+    const roster = await request(app).get(`/api/tareas/${created.body.id}/entregas`)
+      .set(auth(ctx.tokens.cat1));
+    assert.equal(roster.status, 200);
+    assert.deepEqual(roster.body.map(row => row.estado), ["pendiente"]);
+
+    const material = await request(app)
+      .post(`/api/materiales/cursos/${ctx.c4}?periodoAcademicoId=${period.body.id}`)
+      .set(auth(ctx.tokens.cat1))
+      .field("titulo", "Guía de laboratorio")
+      .field("descripcion", "Material de apoyo")
+      .attach("file", Buffer.from("%PDF-1.7\nmaterial"), {
+        filename: "guia.pdf",
+        contentType: "application/pdf"
+      });
+    assert.equal(material.status, 201, JSON.stringify(material.body));
+    assert.equal((await request(app).get(`/api/materiales?periodoAcademicoId=${period.body.id}`)
+      .set(auth(ctx.tokens.alumno1))).body.length, 1);
+    const materialDownload = await request(app)
+      .get(`/api/archivos-academicos/${material.body.archivo.id}/descarga`)
+      .set(auth(ctx.tokens.alumno1));
+    assert.equal(materialDownload.status, 200);
+    assert.equal(materialDownload.body.expiresInSeconds, 60);
+    assert.equal((await request(app)
+      .get(`/api/archivos-academicos/${material.body.archivo.id}/descarga`)
+      .set(auth(ctx.tokens.padre1))).status, 403);
+
+    const attachment = await request(app).post(`/api/tareas/${created.body.id}/adjuntos`)
+      .set(auth(ctx.tokens.cat1))
+      .attach("file", Buffer.from("%PDF-1.7\ninstrucciones"), {
+        filename: "instrucciones.pdf",
+        contentType: "application/pdf"
+      });
+    assert.equal(attachment.status, 201, JSON.stringify(attachment.body));
+    const studentTask = await request(app).get(`/api/tareas/${created.body.id}`)
+      .set(auth(ctx.tokens.alumno1));
+    assert.equal(studentTask.status, 200);
+    assert.equal(studentTask.body.adjuntos[0].nombreOriginal, "instrucciones.pdf");
+    assert.equal("storageKey" in studentTask.body.adjuntos[0], false);
+
+    const invalidFormat = await request(app).post(`/api/tareas/${created.body.id}/entregas`)
+      .set(auth(ctx.tokens.alumno1))
+      .attach("file", Buffer.from("<script>alert(1)</script>"), {
+        filename: "entrega.pdf",
+        contentType: "application/pdf"
+      });
+    assert.equal(invalidFormat.status, 415);
+    const oversizedBuffer = Buffer.alloc(20 * 1024 * 1024 + 1);
+    oversizedBuffer.write("%PDF-1.7\n");
+    const oversizedFile = await request(app).post(`/api/tareas/${created.body.id}/entregas`)
+      .set(auth(ctx.tokens.alumno1))
+      .attach("file", oversizedBuffer, {
+        filename: "entrega.pdf",
+        contentType: "application/pdf"
+      });
+    assert.equal(oversizedFile.status, 413);
+    const delivery = await request(app).post(`/api/tareas/${created.body.id}/entregas`)
+      .set(auth(ctx.tokens.alumno1))
+      .attach("file", Buffer.from("%PDF-1.7\nentrega"), {
+        filename: "entrega.pdf",
+        contentType: "application/pdf"
+      });
+    assert.equal(delivery.status, 201, JSON.stringify(delivery.body));
+    const submitted = await request(app)
+      .get(`/api/tareas?periodoAcademicoId=${period.body.id}&estado=entregada`)
+      .set(auth(ctx.tokens.alumno1));
+    assert.equal(submitted.body.length, 1);
+    assert.equal(submitted.body[0].estadoEntrega, "entregada");
+    assert.equal(submitted.body[0].miEntrega.nombreOriginal, "entrega.pdf");
+    assert.equal((await request(app)
+      .get(`/api/tareas/${created.body.id}/mi-entrega`)
+      .set(auth(ctx.tokens.alumno1))).body.archivo.nombreOriginal, "entrega.pdf");
+    assert.equal((await request(app)
+      .get(`/api/tareas/${created.body.id}/mi-entrega`)
+      .set(auth(ctx.tokens.alumno2))).status, 403);
+    assert.equal((await request(app)
+      .get(`/api/archivos-academicos/${delivery.body.archivo.id}/descarga`)
+      .set(auth(ctx.tokens.alumno2))).status, 403);
+    const teacherRoster = await request(app)
+      .get(`/api/tareas/${created.body.id}/entregas`)
+      .set(auth(ctx.tokens.cat1));
+    assert.equal(teacherRoster.body[0].estado, "entregada");
+    assert.equal(teacherRoster.body[0].entrega.archivo.nombreOriginal, "entrega.pdf");
+
+    assert.equal((await request(app).put(`/api/tareas/${created.body.id}`)
+      .set(auth(ctx.tokens.cat1)).send({ titulo: "Título cambiado" })).status, 409);
+    assert.equal((await request(app).delete(`/api/tareas/${created.body.id}`)
+      .set(auth(ctx.tokens.cat1))).status, 409);
+    assert.equal((await request(app).delete(`/api/asignaciones-curso/${enrollment.body.id}`)
+      .set(auth(ctx.tokens.admin))).status, 409);
+    assert.ok(uploadedObjects.size >= 3);
+  } finally {
+    Object.assign(storage, originalStorage);
+  }
 });
 
 test("un catedrático solo accede a sus secciones", async () => {

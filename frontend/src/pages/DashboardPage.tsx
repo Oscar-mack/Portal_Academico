@@ -9,6 +9,8 @@ import type { DashboardResponse } from "../types/api"
 const AcademicPeriodsPage = lazy(() => import("./admin/AcademicPeriodsPage"))
 const AcademicAssignmentsPage = lazy(() => import("./AcademicAssignmentsPage"))
 const AcademicWorkPage = lazy(() => import("./AcademicWorkPage"))
+const CourseEnrollmentPage = lazy(() => import("./CourseEnrollmentPage"))
+const CourseOfferingsPage = lazy(() => import("./CourseOfferingsPage"))
 const AlumnosPage = lazy(() => import("./admin/AlumnosPage"))
 const CatedraticosPage = lazy(() => import("./admin/CatedraticosPage"))
 const CursosPage = lazy(() => import("./admin/CursosPage"))
@@ -181,6 +183,7 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
       { label: "Grados y carreras", icon: "courses", endpoint: "/api/grados-carreras" },
       { label: "Cursos", icon: "courses", endpoint: "/api/cursos" },
       { label: "Asignaciones", icon: "assignments", endpoint: "/api/asignaciones-curso" },
+      { label: "Oferta de cursos", icon: "courses", endpoint: "/api/ofertas-curso" },
       { label: "Horarios docentes", icon: "calendar", endpoint: "/api/horarios-catedratico" },
       { label: "Evaluaciones", icon: "assignments", endpoint: "/api/evaluaciones" },
       { label: "Tareas y materiales", icon: "assignments", endpoint: "/api/tareas" },
@@ -231,6 +234,7 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
     navigation: [
       { label: "Inicio", icon: "home" },
       { label: "Mis cursos", icon: "courses", endpoint: "/api/asignaciones-curso" },
+      { label: "Inscripción de cursos", icon: "courses", endpoint: "/api/ofertas-curso/disponibles" },
       { label: "Evaluaciones", icon: "assignments", endpoint: "/api/evaluaciones" },
       { label: "Tareas", icon: "assignments", endpoint: "/api/tareas" },
       { label: "Mis calificaciones", icon: "grades", endpoint: "/api/notas" },
@@ -723,6 +727,8 @@ export default function DashboardPage({
               <CursosPage />
             ) : user.rol === "admin" && activeNav === "Asignaciones" ? (
               <AcademicAssignmentsPage user={user} />
+            ) : user.rol === "admin" && activeNav === "Oferta de cursos" ? (
+              <CourseOfferingsPage />
             ) : user.rol === "admin" && activeNav === "Horarios docentes" ? (
               <SchedulesPage user={user} />
             ) : user.rol === "admin" && activeNav === "Evaluaciones" ? (
@@ -765,6 +771,8 @@ export default function DashboardPage({
               <DocumentsPage user={user} />
             ) : user.rol === "alumno" && activeNav === "Mis cursos" ? (
               <AcademicAssignmentsPage user={user} />
+            ) : user.rol === "alumno" && activeNav === "Inscripción de cursos" ? (
+              <CourseEnrollmentPage />
             ) : user.rol === "alumno" && activeNav === "Evaluaciones" ? (
               <StudentEvaluationsPage />
             ) : user.rol === "alumno" && activeNav === "Tareas" ? (

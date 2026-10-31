@@ -2,7 +2,7 @@
 
 ## Estado de esta rama
 
-La implementación local integra tareas, entregas de alumnos y materiales de curso con las asociaciones académicas existentes. El código y la migración son una propuesta de revisión: **no se ejecutó SQL ni se cambió Neon Production, Render, variables de entorno, credenciales, despliegues, pagos, commits ni push**. La rama debe seguir sin integrar hasta que se revisen y aprueben el esquema, proveedor y configuración.
+La rama de revisión integra evaluaciones, tareas, entregas, materiales, autoinscripción y pagos. Las migraciones 001–006 se probaron en PostgreSQL local desechable; nunca se ejecutaron en Neon Production. No se cambiaron Render, variables de entorno reales, credenciales ni despliegues.
 
 El cambio de evaluaciones de la fase anterior se mantiene separado: una evaluación es un componente de calificación; una tarea es una actividad con instrucciones, fechas y entrega de archivo; una nota final publicada es un tercer recurso distinto.
 
@@ -83,7 +83,7 @@ La migración aditiva `scripts/migrations/005-academic-tasks-and-files.sql` crea
 - `auditoria_tareas`: actor, acción, recurso y detalle; trigger impide actualizar o borrar auditoría.
 - Índices de consulta y triggers para validar horario/período y entrega/inscripción/plazo.
 
-La migración no se ejecutó en ninguna base de datos. Debe revisarse con el esquema real antes de aprobar: nombres plurales de tablas existentes, claves foráneas, índices, semántica de períodos, consistencia de triggers y estrategia de reversión. Los triggers no reemplazan las validaciones del controlador.
+La migración 005 se aplicó y revirtió en una base PostgreSQL local desechable, no en producción. Antes de aprobarla todavía debe compararse con el esquema real de Neon; los triggers no reemplazan las validaciones del controlador.
 
 ## Evaluaciones y límites conocidos
 
@@ -100,18 +100,36 @@ Comandos de validación desde esta rama:
 ```bash
 cd frontend && npm run typecheck
 cd frontend && npm run build
-cd .. && npx --yes node@22 --test test/integracion.test.js
+cd .. && npx --yes --package=node@22 --call 'npm test'
+git diff --check
 ```
 
-No ejecutar `scripts/migrations/005-academic-tasks-and-files.sql` hasta aprobación expresa.
+Resultado final: backend **50/50**, typecheck, build y `git diff --check` correctos. No ejecutar migraciones 005 ni 006 en Neon Production hasta aprobación expresa.
 
 ## Validación de la migración 005 (PostgreSQL 16 local desechable)
 
-Se probó en un contenedor Docker descartable (nunca contra Neon). Esquema base: `sequelize.sync()` con los modelos previos a la migración 002, seguido de 001→005.
+Se probó en un contenedor Docker descartable (nunca contra Neon). Esquema base: `sequelize.sync()` con los modelos anteriores a la migración 002, seguido de la secuencia 001→006.
 
 - Verificado: creación de 6 tablas, 16 FK (`ON DELETE RESTRICT`), índices, CHECK (`fechaLimite > fechaPublicacion`, título no vacío, tamaño 1..20 MiB) y UNIQUE (`storageKey`, `archivoId`).
 - Triggers: rechazan tarea sin horario docente/curso/período, tarea en período cerrado, entrega de alumno no inscrito, fuera de plazo o a tarea inactiva; aceptan los casos válidos; la auditoría rechaza UPDATE/DELETE.
 - Los modelos Sequelize consultan correctamente las tablas migradas.
-- `005-...down.sql`: se bloquea si hay datos; sin datos elimina solo los objetos de 005 y deja intactas 002–004; la migración se puede reaplicar.
+- `005-...down.sql`: se bloqueó al existir una tarea; sin datos eliminó solo los objetos de 005 y la migración se reaplicó correctamente.
+- `006-...down.sql`: se bloqueó al existir una oferta; sin datos eliminó solo los objetos de 006 y la migración se reaplicó correctamente.
+- Los tres triggers de 005 y los dos de 006 aceptaron los casos válidos y rechazaron los contextos incoherentes, la falta de inscripción/cupo y la modificación de auditoría.
 
-No verificado: ejecución contra una copia real de Neon (puede diferir del esquema base reconstruido), pruebas de carga/concurrencia, ni R2 real.
+No verificado: ejecución contra una copia real de Neon (puede diferir del esquema base reconstruido), pruebas de carga/concurrencia ni R2 real.
+
+## Inscripción de cursos y pagos (cambios de revisión posteriores)
+
+La inscripción anterior solo permitía POST administrativo y almacenaba alumno/curso/período; no existían secciones, cupos ni fechas de matrícula. Por eso se agregó una oferta de sección explícita en la migración aditiva `scripts/migrations/006-course-offerings-and-self-enrollment.sql`:
+
+- `ofertas_curso` relaciona curso, catedrático y período; define código de sección, cupo máximo, intervalo de inscripción y estado.
+- Los bloques de `horario_catedraticos` y las inscripciones de `asignacion_cursos` pueden relacionarse con `ofertaCursoId`; filas históricas quedan `NULL` y no se reclasifican.
+- `GET /api/ofertas-curso/disponibles?periodoAcademicoId=` lista solo secciones del programa del alumno autenticado y comunica cupos, horario y motivos de no disponibilidad.
+- `POST /api/asignaciones-curso` acepta autoinscripción de alumno únicamente con `{ ofertaCursoId }`. El servidor resuelve su alumno desde JWT y valida curso/programa, estado y fechas del período/sección, curso duplicado, cupos, horario configurado y cruces. La reserva bloquea la fila de oferta dentro de una transacción; un trigger PostgreSQL vuelve a proteger la capacidad.
+- Admin crea/actualiza ofertas desde la interfaz, configura bloques de sección en Horarios docentes y conserva el flujo administrativo histórico de asignaciones. Los horarios de una sección no pueden cambiarse luego de que existan inscripciones.
+- El `.down.sql` de 006 se bloquea si existen ofertas o asociaciones; no elimina filas históricas ni columnas previas. Se verificó localmente la secuencia 001→006, el bloqueo de la reversión con una oferta, la reversión sin ofertas y la reaplicación.
+
+Pagos ya tenían rutas reales: `GET /api/cargos`, `GET /api/pagos` y `POST /api/pagos/checkout` permiten admin/alumno/padre según corresponda. Alumno se restringe a su perfil; el padre a alumnos vinculados. El concepto y monto provienen de cargos emitidos por administración (no existe catálogo de conceptos); el frontend muestra concepto, monto y moneda. Se mejoró el estado sin Stripe configurado a HTTP 503 con mensaje explícito, y la pantalla de retorno sigue consultando `GET /api/pagos`; solo el webhook firmado confirma pagos.
+
+Las pruebas nuevas usan una fábrica Stripe stub local (no se genera ningún pago real) y cubren autoinscripción por sección, identidad desde JWT, cupo, fecha de apertura, duplicados, programa, cruce de horario, consulta de pagos por alumno/padre y proveedor no configurado.

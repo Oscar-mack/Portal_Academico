@@ -65,6 +65,7 @@ db.auditoriaTareas = require("./auditoriaTarea.model.js")(sequelize, Sequelize);
 db.cargos = require("./cargo.model.js")(sequelize, Sequelize);
 db.eventosStripe = require("./eventoStripe.model.js")(sequelize, Sequelize);
 db.requisitosSolvenciaDocumentos = require("./requisitoSolvenciaDocumento.model.js")(sequelize, Sequelize);
+db.ofertasCurso = require("./ofertaCurso.model.js")(sequelize, Sequelize);
 
 db.gradosCarreras.hasMany(db.alumnos, { foreignKey: "gradoCarreraId", as: "alumnos" });
 db.alumnos.belongsTo(db.gradosCarreras, { foreignKey: "gradoCarreraId", as: "gradoCarrera" });
@@ -119,6 +120,16 @@ db.asignacionesCurso.belongsTo(db.periodosAcademicos, { foreignKey: "periodoAcad
 db.periodosAcademicos.hasMany(db.asignacionesCurso, { foreignKey: "periodoAcademicoId", as: "asignacionesCurso" });
 db.horariosCatedratico.belongsTo(db.periodosAcademicos, { foreignKey: "periodoAcademicoId", as: "periodoAcademico" });
 db.periodosAcademicos.hasMany(db.horariosCatedratico, { foreignKey: "periodoAcademicoId", as: "horarios" });
+db.ofertasCurso.belongsTo(db.cursos, { foreignKey: "cursoId", as: "curso" });
+db.cursos.hasMany(db.ofertasCurso, { foreignKey: "cursoId", as: "ofertas" });
+db.ofertasCurso.belongsTo(db.catedraticos, { foreignKey: "catedraticoId", as: "catedratico" });
+db.catedraticos.hasMany(db.ofertasCurso, { foreignKey: "catedraticoId", as: "ofertasCurso" });
+db.ofertasCurso.belongsTo(db.periodosAcademicos, { foreignKey: "periodoAcademicoId", as: "periodoAcademico" });
+db.periodosAcademicos.hasMany(db.ofertasCurso, { foreignKey: "periodoAcademicoId", as: "ofertasCurso" });
+db.ofertasCurso.hasMany(db.asignacionesCurso, { foreignKey: "ofertaCursoId", as: "inscripciones" });
+db.asignacionesCurso.belongsTo(db.ofertasCurso, { foreignKey: "ofertaCursoId", as: "ofertaCurso" });
+db.ofertasCurso.hasMany(db.horariosCatedratico, { foreignKey: "ofertaCursoId", as: "horarios" });
+db.horariosCatedratico.belongsTo(db.ofertasCurso, { foreignKey: "ofertaCursoId", as: "ofertaCurso" });
 db.notas.belongsTo(db.periodosAcademicos, { foreignKey: "periodoAcademicoId", as: "periodoAcademico" });
 db.periodosAcademicos.hasMany(db.notas, { foreignKey: "periodoAcademicoId", as: "notas" });
 

@@ -16,11 +16,15 @@ const CANCEL_URL = process.env.APP_URL
   ? `${process.env.APP_URL}/pago-cancelado`
   : "http://localhost:5173/pago-cancelado";
 
+let stripeFactory = key => Stripe(key);
+
 const getStripe = () => {
   if (!process.env.STRIPE_SECRET_KEY) {
-    throw new Error("STRIPE_SECRET_KEY no esta configurada.");
+    const error = new Error("Los pagos en línea no están disponibles porque el proveedor de pagos no está configurado.");
+    error.code = "PAYMENT_PROVIDER_UNAVAILABLE";
+    throw error;
   }
-  return Stripe(process.env.STRIPE_SECRET_KEY);
+  return stripeFactory(process.env.STRIPE_SECRET_KEY);
 };
 
 // C2: Transiciones validas de estado de pago.
@@ -65,7 +69,7 @@ async function saldoCargoEnCentavos(cargoId, transaction) {
   return { cargo, pagado, saldo: Math.max(0, aCentavos(cargo.montoOriginal) - pagado) };
 }
 
-async function crearSesionParaCargo(req, res, stripe) {
+async function crearSesionParaCargo(req, res) {
   const { cargoId, monto: montoSolicitado } = req.body;
   if (!Number.isInteger(Number(cargoId)) || Number(cargoId) <= 0) {
     return res.status(400).send({ message: "cargoId debe ser un identificador válido." });
@@ -73,6 +77,7 @@ async function crearSesionParaCargo(req, res, stripe) {
 
   const transaction = await db.sequelize.transaction();
   let pago;
+  let stripe;
   let reutilizarSesionId = null;
   let cargoNombre;
   let cantidadCentavos;
@@ -100,6 +105,16 @@ async function crearSesionParaCargo(req, res, stripe) {
     if (cantidadCentavos === null) {
       await transaction.rollback();
       return res.status(400).send({ message: "El abono debe ser positivo, en centavos y no superar el saldo pendiente." });
+    }
+
+    try {
+      stripe = getStripe();
+    } catch (error) {
+      await transaction.rollback();
+      if (error.code === "PAYMENT_PROVIDER_UNAVAILABLE") {
+        return res.status(503).send({ message: error.message });
+      }
+      throw error;
     }
 
     const alumno = await Alumno.findByPk(cargo.alumnoId, { transaction });
@@ -189,10 +204,9 @@ exports.crearSesion = async (req, res) => {
     if (req.body.cargoId === undefined) {
       return res.status(400).send({ message: "cargoId es obligatorio; el importe se obtiene del cargo en el servidor." });
     }
-    const stripe = getStripe();
-    return await crearSesionParaCargo(req, res, stripe);
+    return await crearSesionParaCargo(req, res);
   } catch (error) {
-    res.status(500).send({ message: error.message || "Error al crear la sesion de pago." });
+    res.status(500).send({ message: error.message || "Error al crear la sesión de pago." });
   }
 };
 
@@ -349,5 +363,14 @@ exports.findAll = async (req, res) => {
     res.send(pagos);
   } catch (error) {
     res.status(500).send({ message: "Error al obtener los pagos." });
+  }
+};
+
+exports._testing = {
+  setStripeFactory(factory) {
+    stripeFactory = factory;
+  },
+  resetStripeFactory() {
+    stripeFactory = key => Stripe(key);
   }
 };

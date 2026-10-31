@@ -64,6 +64,10 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
   const [items, setItems] = useState<HorarioCatedratico[]>([])
   const [courses, setCourses] = useState<Curso[]>([])
   const [teachers, setTeachers] = useState<TeacherRecord[]>([])
+  const [offers, setOffers] = useState<
+    Awaited<ReturnType<typeof academicAssignmentsService.listCourseOffers>>
+  >([])
+  const [selectedOfferId, setSelectedOfferId] = useState("")
   const [query, setQuery] = useState("")
   const [courseFilter, setCourseFilter] = useState("")
   const [teacherFilter, setTeacherFilter] = useState("")
@@ -88,13 +92,16 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
       })
       setItems(scheduleRows)
       if (canManage) {
-        const [courseRows, teacherRows] = await Promise.all([
+        const [courseRows, teacherRows, offerRows] = await Promise.all([
           catalogsService.listCourses(true),
           catedraticosService.list(),
+          academicAssignmentsService.listCourseOffers(selectedPeriodId ?? undefined),
         ])
         setCourses(courseRows)
         setTeachers(teacherRows)
+        setOffers(offerRows)
       } else {
+        setOffers([])
         setCourses(
           Array.from(
             new Map(
@@ -208,12 +215,15 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
       return
     }
 
+    const selectedOffer = !record
+      ? offers.find((offer) => offer.id === Number(form.get("ofertaCursoId")))
+      : undefined
     const catedraticoId = record
       ? record.catedraticoId
-      : Number(form.get("catedraticoId"))
+      : selectedOffer?.catedraticoId ?? Number(form.get("catedraticoId"))
     const periodValue = record
       ? schedulePeriodKey(record)
-      : `id:${String(form.get("periodoAcademicoId"))}`
+      : `id:${selectedOffer?.periodoAcademicoId ?? String(form.get("periodoAcademicoId"))}`
     const overlap = items.some(
       (schedule) =>
         schedule.id !== record?.id &&
@@ -243,8 +253,9 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
       } else {
         const input: ScheduleInput = {
           catedraticoId,
-          cursoId: Number(form.get("cursoId")),
-          periodoAcademicoId: Number(form.get("periodoAcademicoId")),
+          cursoId: selectedOffer?.cursoId ?? Number(form.get("cursoId")),
+          periodoAcademicoId: selectedOffer?.periodoAcademicoId ?? Number(form.get("periodoAcademicoId")),
+          ...(selectedOffer ? { ofertaCursoId: selectedOffer.id } : {}),
           dia,
           horaInicio,
           horaFin,
@@ -317,6 +328,7 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
                 className="h-11 rounded-xl bg-brand px-5 text-sm font-bold text-white hover:bg-brand-dark"
                 onClick={() => {
                   setError("")
+                  setSelectedOfferId("")
                   setEditor("create")
                 }}
                 type="button"
@@ -549,64 +561,108 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
       >
         <form onSubmit={submit}>
           <div className="grid gap-5 px-6 py-6 sm:grid-cols-2">
-            <FormField label="Catedrático">
-              <SelectInput
-                defaultValue={record?.catedraticoId}
-                disabled={Boolean(record)}
-                name="catedraticoId"
-                required
-              >
-                <option value="">Selecciona un catedrático</option>
-                {teachers.map((teacher) => (
-                  <option key={teacher.id} value={teacher.id}>
-                    {fullName(teacher)}
-                  </option>
-                ))}
-              </SelectInput>
-            </FormField>
-            <FormField label="Curso">
-              <SelectInput
-                defaultValue={record?.cursoId}
-                disabled={Boolean(record)}
-                name="cursoId"
-                required
-              >
-                <option value="">Selecciona un curso</option>
-                {courses
-                  .filter((course) => course.activo || course.id === record?.cursoId)
-                  .map((course) => (
-                    <option key={course.id} value={course.id}>
-                      {course.codigo} · {course.nombre}
-                    </option>
-                  ))}
-              </SelectInput>
-            </FormField>
-            <div className="sm:col-span-2">
-              <FormField label="Período académico">
-                <SelectInput
-                  defaultValue={
-                    record?.periodoAcademicoId ?? selectedPeriodId ?? ""
-                  }
-                  disabled={Boolean(record)}
-                  name="periodoAcademicoId"
-                  required
+            {!record && (
+              <div className="sm:col-span-2">
+                <FormField
+                  hint="Selecciona una sección para que la inscripción y el horario queden vinculados."
+                  label="Sección (opcional para horarios históricos)"
                 >
-                  {record && !record.periodoAcademicoId ? (
-                    <option value="">
-                      Histórico: {record.periodo || "sin período relacionado"}
-                    </option>
-                  ) : (
-                    <option value="">Selecciona un período</option>
-                  )}
-                  {periods.map((period) => (
-                    <option key={period.id} value={period.id}>
-                      {period.nombre} ·{" "}
-                      {period.estado === "abierto" ? "abierto" : "cerrado"}
-                    </option>
-                  ))}
-                </SelectInput>
-              </FormField>
-            </div>
+                  <SelectInput
+                    name="ofertaCursoId"
+                    onChange={(event) => setSelectedOfferId(event.target.value)}
+                    value={selectedOfferId}
+                  >
+                    <option value="">Horario sin sección</option>
+                    {offers.filter((offer) => offer.activo).map((offer) => (
+                      <option key={offer.id} value={offer.id}>
+                        {offer.curso?.codigo} · {offer.codigoSeccion} ·{" "}
+                        {offer.periodoAcademico?.nombre}
+                      </option>
+                    ))}
+                  </SelectInput>
+                </FormField>
+              </div>
+            )}
+            {selectedOfferId && !record ? (
+              (() => {
+                const offer = offers.find((item) => item.id === Number(selectedOfferId))
+                if (!offer) return null
+                return (
+                  <>
+                    <input name="catedraticoId" type="hidden" value={offer.catedraticoId} />
+                    <input name="cursoId" type="hidden" value={offer.cursoId} />
+                    <input name="periodoAcademicoId" type="hidden" value={offer.periodoAcademicoId} />
+                    <div className="sm:col-span-2 rounded-xl bg-canvas/55 p-3 text-sm text-muted">
+                      {offer.curso?.codigo} · {offer.curso?.nombre} · Sección{" "}
+                      {offer.codigoSeccion} ·{" "}
+                      {offer.catedratico?.nombre} {offer.catedratico?.apellido} ·{" "}
+                      {offer.periodoAcademico?.nombre}
+                    </div>
+                  </>
+                )
+              })()
+            ) : (
+              <>
+                <FormField label="Catedrático">
+                  <SelectInput
+                    defaultValue={record?.catedraticoId}
+                    disabled={Boolean(record)}
+                    name="catedraticoId"
+                    required
+                  >
+                    <option value="">Selecciona un catedrático</option>
+                    {teachers.map((teacher) => (
+                      <option key={teacher.id} value={teacher.id}>
+                        {fullName(teacher)}
+                      </option>
+                    ))}
+                  </SelectInput>
+                </FormField>
+                <FormField label="Curso">
+                  <SelectInput
+                    defaultValue={record?.cursoId}
+                    disabled={Boolean(record)}
+                    name="cursoId"
+                    required
+                  >
+                    <option value="">Selecciona un curso</option>
+                    {courses
+                      .filter((course) => course.activo || course.id === record?.cursoId)
+                      .map((course) => (
+                        <option key={course.id} value={course.id}>
+                          {course.codigo} · {course.nombre}
+                        </option>
+                      ))}
+                  </SelectInput>
+                </FormField>
+                <div className="sm:col-span-2">
+                  <FormField label="Período académico">
+                    <SelectInput
+                      defaultValue={
+                        record?.periodoAcademicoId ?? selectedPeriodId ?? ""
+                      }
+                      disabled={Boolean(record)}
+                      name="periodoAcademicoId"
+                      required
+                    >
+                      {record && !record.periodoAcademicoId ? (
+                        <option value="">
+                          Histórico: {record.periodo || "sin período relacionado"}
+                        </option>
+                      ) : (
+                        <option value="">Selecciona un período</option>
+                      )}
+                      {periods.map((period) => (
+                        <option key={period.id} value={period.id}>
+                          {period.nombre} ·{" "}
+                          {period.estado === "abierto" ? "abierto" : "cerrado"}
+                        </option>
+                      ))}
+                    </SelectInput>
+                  </FormField>
+                </div>
+              </>
+            )}
             <FormField label="Día">
               <SelectInput defaultValue={record?.dia} name="dia" required>
                 <option value="">Selecciona un día</option>

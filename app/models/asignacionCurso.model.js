@@ -21,6 +21,10 @@ module.exports = (sequelize, DataTypes) => {
 		periodoAcademicoId: {
 			type: DataTypes.INTEGER,
 			allowNull: true
+		},
+		ofertaCursoId: {
+			type: DataTypes.INTEGER,
+			allowNull: true
 		}
 	}, {
 		indexes: [

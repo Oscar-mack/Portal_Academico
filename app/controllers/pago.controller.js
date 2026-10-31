@@ -16,16 +16,29 @@ function checkoutReturnUrl(path) {
 
 let stripeFactory = key => Stripe(key);
 
-const getStripe = () => {
+const PROVIDER_UNAVAILABLE = "PAYMENT_PROVIDER_UNAVAILABLE";
+
+// El webhook solo necesita las claves de Stripe; FRONTEND_URL únicamente se usa al crear el Checkout.
+// Exigirla en el webhook haría que Stripe reciba 400 y los pagos nunca se confirmen.
+const getStripe = ({ checkout = false } = {}) => {
   const required = ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"];
-  if (process.env.NODE_ENV === "production") required.push("APP_URL", "FRONTEND_URL");
+  if (checkout && process.env.NODE_ENV === "production") required.push("FRONTEND_URL");
   const missing = required.filter(key => !process.env[key]);
   if (missing.length > 0) {
     const error = new Error(
       `Los pagos en línea no están disponibles; faltan variables de configuración: ${missing.join(", ")}.`
     );
-    error.code = "PAYMENT_PROVIDER_UNAVAILABLE";
+    error.code = PROVIDER_UNAVAILABLE;
     throw error;
+  }
+  if (checkout) {
+    try {
+      checkoutReturnUrl("/pago-exitoso");
+    } catch {
+      const error = new Error("Los pagos en línea no están disponibles; FRONTEND_URL no es una URL válida.");
+      error.code = PROVIDER_UNAVAILABLE;
+      throw error;
+    }
   }
   return stripeFactory(process.env.STRIPE_SECRET_KEY);
 };
@@ -36,7 +49,8 @@ const TRANSICIONES_VALIDAS = {
   pendiente: ["pagado", "fallido", "cancelado"],
   fallido: [],
   cancelado: [],
-  pagado: []  // terminal: webhooks tardios o repetidos no lo degradan
+  anulado: [],
+  pagado: []  // terminal para webhooks: solo un administrador puede anularlo (anularPago)
 };
 
 const aCentavos = valor => Math.round(Number(valor) * 100);
@@ -111,10 +125,10 @@ async function crearSesionParaCargo(req, res) {
     }
 
     try {
-      stripe = getStripe();
+      stripe = getStripe({ checkout: true });
     } catch (error) {
       await transaction.rollback();
-      if (error.code === "PAYMENT_PROVIDER_UNAVAILABLE") {
+      if (error.code === PROVIDER_UNAVAILABLE) {
         return res.status(503).send({ message: error.message });
       }
       throw error;
@@ -149,7 +163,7 @@ async function crearSesionParaCargo(req, res) {
     }
     await transaction.commit();
   } catch (error) {
-    await transaction.rollback();
+    if (!transaction.finished) await transaction.rollback();
     throw error;
   }
 
@@ -167,7 +181,8 @@ async function crearSesionParaCargo(req, res) {
       return res.status(409).send({ message: "El pago está en proceso de confirmación por Stripe.", pagoId: pago.id });
     }
     await pago.update({ estado: "cancelado" });
-    return res.status(409).send({ message: "La sesión de pago expiró; vuelve a solicitar el Checkout." });
+    // La sesión anterior expiró: se genera un Checkout nuevo en lugar de pedir al usuario que reintente.
+    return crearSesionParaCargo(req, res);
   }
 
   try {
@@ -333,6 +348,113 @@ exports.webhook = async (req, res) => {
     return res.status(500).send({ message: "Error al procesar el evento." });
   }
   res.json({ received: true, ...(duplicate ? { duplicate: true } : {}) });
+};
+
+// Los pagos nunca se eliminan: forman parte del rastro contable. Un administrador solo puede
+// - cancelar un Checkout 'pendiente' (se expira la sesión en Stripe), o
+// - anular un pago 'pagado' (reversión contable: deja de contar en el saldo y conserva el registro).
+// Para devolver el dinero al pagador se debe indicar reembolsar=true (Refund en Stripe).
+exports.anular = async (req, res) => {
+  const motivo = String(req.body?.motivo ?? "").trim();
+  if (motivo.length < 5) {
+    return res.status(400).send({ message: "El motivo de anulación es obligatorio (mínimo 5 caracteres)." });
+  }
+  if (req.body?.reembolsar !== undefined && typeof req.body.reembolsar !== "boolean") {
+    return res.status(400).send({ message: "reembolsar debe ser verdadero o falso." });
+  }
+  const reembolsar = req.body?.reembolsar === true;
+  const pagoId = Number(req.params.id);
+  if (!Number.isInteger(pagoId) || pagoId <= 0) {
+    return res.status(400).send({ message: "El identificador del pago no es válido." });
+  }
+
+  const transaction = await db.sequelize.transaction();
+  try {
+    // Mismo orden de bloqueo que el webhook: primero el cargo y luego el pago.
+    const snapshot = await Pago.findByPk(pagoId, { transaction });
+    if (!snapshot) {
+      await transaction.rollback();
+      return res.status(404).send({ message: "Pago no encontrado." });
+    }
+    if (snapshot.cargoId) {
+      await Cargo.findByPk(snapshot.cargoId, { transaction, lock: transaction.LOCK.UPDATE });
+    }
+    const pago = await Pago.findByPk(pagoId, { transaction, lock: transaction.LOCK.UPDATE });
+
+    if (!["pendiente", "pagado"].includes(pago.estado)) {
+      await transaction.rollback();
+      return res.status(409).send({ message: `El pago ya está en estado '${pago.estado}' y no puede anularse.` });
+    }
+    if (pago.estado === "pendiente" && reembolsar) {
+      await transaction.rollback();
+      return res.status(400).send({ message: "Un pago pendiente no tiene cobro que reembolsar." });
+    }
+
+    let stripe = null;
+    if (pago.estado === "pendiente" ? Boolean(pago.stripeSessionId) : reembolsar) {
+      try {
+        stripe = getStripe();
+      } catch (error) {
+        await transaction.rollback();
+        if (error.code === PROVIDER_UNAVAILABLE) return res.status(503).send({ message: error.message });
+        throw error;
+      }
+    }
+
+    const cambios = { anuladoEn: new Date(), anuladoPorId: req.userId, motivoAnulacion: motivo };
+    let reembolsoId = null;
+    if (pago.estado === "pendiente") {
+      if (stripe) {
+        try {
+          await stripe.checkout.sessions.expire(pago.stripeSessionId);
+        } catch (stripeError) {
+          // Si la sesión ya se completó, el webhook confirmará el pago; no se puede cancelar.
+          const sesion = await stripe.checkout.sessions.retrieve(pago.stripeSessionId).catch(() => null);
+          if (sesion?.status !== "expired") {
+            await transaction.rollback();
+            return res.status(409).send({
+              message: "No se pudo cancelar la sesión en Stripe; puede estar completándose. Verifica el estado e inténtalo de nuevo."
+            });
+          }
+        }
+      }
+      cambios.estado = "cancelado";
+    } else {
+      if (reembolsar) {
+        if (!pago.stripePaymentIntentId) {
+          await transaction.rollback();
+          return res.status(400).send({ message: "El pago no tiene un cobro de Stripe asociado para reembolsar." });
+        }
+        try {
+          const reembolso = await stripe.refunds.create({
+            payment_intent: pago.stripePaymentIntentId,
+            metadata: { pagoId: String(pago.id) }
+          }, { idempotencyKey: `portal-reembolso-${pago.id}` });
+          reembolsoId = reembolso.id;
+        } catch (stripeError) {
+          console.error("Error al reembolsar en Stripe:", stripeError.message, "pagoId:", pago.id);
+          await transaction.rollback();
+          return res.status(502).send({ message: "Stripe no pudo procesar el reembolso; el pago no fue modificado." });
+        }
+        cambios.stripeRefundId = reembolsoId;
+      }
+      cambios.estado = "anulado";
+    }
+    await pago.update(cambios, { transaction });
+    await transaction.commit();
+    return res.send({
+      id: pago.id,
+      estado: pago.estado,
+      reembolsado: Boolean(reembolsoId),
+      message: reembolsoId || pago.estado === "cancelado"
+        ? "Pago anulado correctamente."
+        : "Pago anulado contablemente. El dinero no se devolvió automáticamente; gestiona el reembolso en Stripe."
+    });
+  } catch (error) {
+    if (!transaction.finished) await transaction.rollback();
+    console.error("Error al anular el pago:", error.message);
+    return res.status(500).send({ message: "No se pudo anular el pago." });
+  }
 };
 
 // Consulta de pagos (Administrador ve todos; Alumno/Padre ven solo lo suyo)

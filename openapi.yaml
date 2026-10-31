@@ -872,7 +872,7 @@ paths:
           schema: { type: integer }
         - name: estado
           in: query
-          schema: { type: string, enum: [pendiente, pagado, fallido, cancelado] }
+          schema: { type: string, enum: [pendiente, pagado, fallido, cancelado, anulado] }
       responses:
         "200":
           description: Lista
@@ -882,6 +882,33 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Pago" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /api/pagos/{id}/anular:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    patch:
+      tags: [Pagos]
+      summary: Cancelar un checkout pendiente o anular un pago confirmado (admin)
+      description: |
+        Los pagos no se eliminan (`DELETE` responde 405). `pendiente` pasa a `cancelado` y expira
+        la sesión de Stripe; `pagado` pasa a `anulado` y deja de contar en el saldo. Con
+        `reembolsar: true` se crea además un Refund en Stripe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, minLength: 5 }
+                reembolsar: { type: boolean }
+      responses:
+        "200": { description: Pago cancelado o anulado }
+        "400": { description: Motivo ausente o reembolso no aplicable }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Pago no encontrado }
+        "409": { description: El pago ya está cancelado, fallido o anulado }
+        "502": { description: Stripe rechazó el reembolso; el pago no cambió }
   /api/pagos/webhook:
     post:
       tags: [Pagos]
@@ -1398,7 +1425,9 @@ components:
         concepto: { type: string }
         monto: { type: number }
         moneda: { type: string, example: usd }
-        estado: { type: string, enum: [pendiente, pagado, fallido, cancelado] }
+        estado: { type: string, enum: [pendiente, pagado, fallido, cancelado, anulado] }
+        motivoAnulacion: { type: string, nullable: true }
+        anuladoEn: { type: string, format: date-time, nullable: true }
         fechaPago: { type: string, format: date-time, nullable: true }
         alumno: { $ref: "#/components/schemas/Alumno" }
         cargo: { $ref: "#/components/schemas/Cargo" }

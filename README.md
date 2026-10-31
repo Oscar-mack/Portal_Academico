@@ -111,7 +111,7 @@ específicos mediante los middlewares de `app/middlewares/authJwt.js`:
 | Asignación curso→catedrático | `/api/horarios-catedratico` | admin |
 | Notas | `/api/notas` | admin, catedrático (solo su curso) |
 | Reportes | `/api/reportes/...` | admin, catedrático, alumno, padre (según reporte) |
-| Pagos (Stripe) | `/api/pagos` | alumno, padre (de sus propios hijos) |
+| Pagos (Stripe) | `/api/pagos` | alumno, padre (checkout y consulta de lo propio); admin (consulta y anulación) |
 | Ciclos y períodos | `/api/ciclos`, `/api/periodos` | admin |
 | Evaluaciones y calificaciones | `/api/evaluaciones` | admin, catedrático asignado |
 | Cargos y solvencia | `/api/cargos` | admin (escritura), alumno o padre autorizado (consulta/pago) |
@@ -200,7 +200,7 @@ y `DB_PORT`.
 
 Debes añadir además todas las variables usadas por la aplicación, especialmente
 `JWT_SECRET`, `JWT_EXPIRES_IN`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-`CORS_ORIGIN`, `APP_URL` (dominio del backend para el webhook) y `FRONTEND_URL`
+`CORS_ORIGIN`, `APP_URL` (informativa) y `FRONTEND_URL`
 (dominio web para los retornos de Checkout). Nunca subas contraseñas ni
 credenciales al repositorio.
 

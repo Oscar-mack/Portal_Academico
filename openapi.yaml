@@ -917,10 +917,11 @@ paths:
                 reembolsar: { type: boolean }
       responses:
         "200": { description: Pago cancelado o anulado }
+        "202": { description: Reembolso en proceso en Stripe; el pago sigue 'pagado' hasta que el webhook lo confirme }
         "400": { description: Motivo ausente o reembolso no aplicable }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Pago no encontrado }
-        "409": { description: El pago ya está cancelado, fallido o anulado }
+        "409": { description: El pago ya está cancelado, fallido o anulado, o el cobro tiene reembolsos parciales/múltiples en Stripe }
         "502": { description: Stripe rechazó el reembolso; el pago no cambió }
   /api/pagos/webhook:
     post:

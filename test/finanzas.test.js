@@ -27,6 +27,7 @@ let sessionStatus = "open";
 let refundShouldFail = false;
 let sessionSuccessUrl = null;
 let refundStatus = null;
+const refundStore = [];
 
 function stripeMock() {
   return {
@@ -53,11 +54,23 @@ function stripeMock() {
       }
     },
     refunds: {
-      create: async input => {
+      create: async (input, options = {}) => {
         if (refundShouldFail) throw new Error("refund failed");
+        const previo = options.idempotencyKey && refundStore.find(r => r.key === options.idempotencyKey);
+        if (previo) return previo.refund;
         stripeCalls.refunds.push(input);
-        return { id: `re_test_${stripeCalls.refunds.length}`, ...(refundStatus ? { status: refundStatus } : {}) };
-      }
+        const refund = {
+          id: `re_test_${stripeCalls.refunds.length}`,
+          status: refundStatus || "succeeded",
+          amount: input.amount,
+          currency: "usd",
+          payment_intent: input.payment_intent,
+          metadata: input.metadata || {}
+        };
+        refundStore.push({ key: options.idempotencyKey, refund });
+        return refund;
+      },
+      list: async params => ({ data: refundStore.map(r => r.refund).filter(r => r.payment_intent === params.payment_intent) })
     },
     webhooks: Stripe.webhooks
   };
@@ -598,7 +611,7 @@ test("webhook: los cuatro eventos, duplicados y pagos confirmados que no se libe
   assert.equal(cargos.find(c => c.id === cargo.id).montoPagado, 60);
 });
 
-test("reembolso: estados fallido/cancelado no anulan el pago; pendiente se informa como en curso", async () => {
+test("reembolso: estados fallido/cancelado no anulan el pago; pendiente no anula hasta confirmarse", async () => {
   const pagarCargo = async concepto => {
     const cargo = (await crearCargo(ctx.tokens.admin, { concepto })).body;
     sessionStatus = "open";
@@ -626,10 +639,12 @@ test("reembolso: estados fallido/cancelado no anulan el pago; pendiente se infor
   refundStatus = "pending";
   const enCurso = await anular(pendiente.pagoId);
   refundStatus = null;
-  assert.equal(enCurso.status, 200);
+  assert.equal(enCurso.status, 202);
   assert.equal(enCurso.body.reembolsoEnCurso, true);
   assert.equal(enCurso.body.reembolsado, false);
-  assert.equal((await db.pagos.findByPk(pendiente.pagoId)).estado, "anulado");
+  const pagoEnCurso = await db.pagos.findByPk(pendiente.pagoId);
+  assert.equal(pagoEnCurso.estado, "pagado", "el pago sigue pagado hasta que Stripe confirme");
+  assert.ok(pagoEnCurso.stripeRefundId);
 
   const completo = await pagarCargo("Reembolso completo");
   refundStatus = "succeeded";

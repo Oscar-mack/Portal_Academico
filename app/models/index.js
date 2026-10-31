@@ -16,7 +16,14 @@ const hasIndividualDatabaseConfiguration = [
 
 let sequelize;
 
-if (process.env.NODE_ENV === "test") {
+if (process.env.NODE_ENV === "test" && process.env.TEST_DATABASE_URL) {
+	// Pruebas opcionales de concurrencia: solo contra un PostgreSQL local, nunca contra una base remota.
+	const host = new URL(process.env.TEST_DATABASE_URL).hostname;
+	if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+		throw new Error("TEST_DATABASE_URL solo puede apuntar a un PostgreSQL local.");
+	}
+	sequelize = new Sequelize(process.env.TEST_DATABASE_URL, { dialect: "postgres", logging: false, pool: { max: 20 } });
+} else if (process.env.NODE_ENV === "test") {
 	// Las pruebas de integración usan una base SQLite en memoria.
 	sequelize = new Sequelize("sqlite::memory:", { logging: false });
 } else if (dbConfig.DATABASE_URL) {

@@ -1,10 +1,11 @@
-const { verifyToken, isAdminOrCatedratico } = require("../middlewares/authJwt.js");
+const { verifyToken, isAdminOrCatedratico, hasRole } = require("../middlewares/authJwt.js");
+const ROLES = require("../config/roles.js");
 
 module.exports = app => {
   const evaluaciones = require("../controllers/evaluacion.controller.js");
   const router = require("express").Router();
 
-  router.get("/", [verifyToken, isAdminOrCatedratico], evaluaciones.findAll);
+  router.get("/", [verifyToken, hasRole(ROLES.ADMIN, ROLES.CATEDRATICO, ROLES.ALUMNO)], evaluaciones.findAll);
   router.post("/", [verifyToken, isAdminOrCatedratico], evaluaciones.create);
   router.put("/:id", [verifyToken, isAdminOrCatedratico], evaluaciones.update);
   router.delete("/:id", [verifyToken, isAdminOrCatedratico], evaluaciones.delete);

@@ -6,6 +6,7 @@ import StatusBadge from "../components/StatusBadge"
 import { useAcademicPeriod } from "../context/AcademicPeriodContext"
 import type { AuthUser } from "../lib/api"
 import { downloadBlob } from "../lib/download"
+import { money } from "../lib/money"
 import { academicAssignmentsService } from "../services/academicAssignmentsService"
 import { evaluationsService } from "../services/evaluationsService"
 import { financeService } from "../services/financeService"
@@ -74,13 +75,6 @@ function HomeIcon({ name }: { name: HomeIcon }) {
       {paths[name]}
     </svg>
   )
-}
-
-function formatMoney(currency: string, amount: number) {
-  return new Intl.NumberFormat("es-GT", {
-    style: "currency",
-    currency,
-  }).format(amount)
 }
 
 function Metric({
@@ -274,7 +268,7 @@ function AdminHome({
             {balances.length ? balances.map(([currency, amount]) => (
               <div className="flex items-center justify-between rounded-xl bg-canvas/60 px-4 py-3" key={currency}>
                 <span className="text-xs font-bold text-muted">{currency}</span>
-                <span className="text-lg font-bold text-brand">{formatMoney(currency, amount)}</span>
+                <span className="text-lg font-bold text-brand">{money(currency, amount)}</span>
               </div>
             )) : <p className="rounded-xl border border-dashed border-line p-5 text-center text-sm text-muted">Sin saldos pendientes</p>}
           </div>
@@ -380,7 +374,7 @@ function StudentOverview({
         <Metric label="Cursos inscritos" value={summary.totalCursos} detail="Asignaciones del período" icon="book" />
         <Metric label="Promedio publicado" value={summary.promedioNotasPublicadas.toFixed(2)} detail={`${summary.totalNotasPublicadas} notas oficiales`} icon="grade" tone="blue" />
         <Metric label="Cursos aprobados" value={summary.aprobados} detail={`${summary.reprobados} reprobados`} icon="grade" tone="amber" />
-        <Metric label="Cargos pendientes" value={summary.cargosPendientes.length} detail={balances.map(([currency, amount]) => formatMoney(currency, amount)).join(" · ") || "Sin saldo"} icon="money" tone="violet" />
+        <Metric label="Cargos pendientes" value={summary.cargosPendientes.length} detail={balances.map(([currency, amount]) => money(currency, amount)).join(" · ") || "Sin saldo"} icon="money" tone="violet" />
       </section>
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
         <section className="rounded-2xl border border-line bg-white p-6">

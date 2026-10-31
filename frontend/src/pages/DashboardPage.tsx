@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react"
 import AcademicPeriodSelector from "../components/AcademicPeriodSelector"
 import { useAcademicPeriod } from "../context/AcademicPeriodContext"
 import { ApiError, AuthUser, displayName, UserRole } from "../lib/api"
+import { money } from "../lib/money"
 import { dashboardService } from "../services/dashboardService"
 import type { DashboardResponse } from "../types/api"
 
@@ -337,11 +338,7 @@ function formatBalances(balances: Record<string, number>) {
   if (!entries.length) return "Sin saldo pendiente"
   return entries
     .map(([currency, amount]) =>
-      new Intl.NumberFormat("es-GT", {
-        style: "currency",
-        currency,
-        maximumFractionDigits: 2,
-      }).format(amount),
+      money(currency, amount),
     )
     .join(" · ")
 }

@@ -8,6 +8,7 @@ import StatusBadge from "../components/StatusBadge"
 import { useAcademicPeriod } from "../context/AcademicPeriodContext"
 import type { AuthUser } from "../lib/api"
 import { downloadBlob } from "../lib/download"
+import { money } from "../lib/money"
 import { academicAssignmentsService } from "../services/academicAssignmentsService"
 import { catalogsService } from "../services/catalogsService"
 import { familyService } from "../services/familyService"
@@ -65,13 +66,6 @@ function fullName(student?: DocumentStudent) {
   return student
     ? `${student.nombre} ${student.apellido}`
     : "Selecciona un alumno"
-}
-
-function money(currency: string, value: number) {
-  return new Intl.NumberFormat("es-GT", {
-    style: "currency",
-    currency,
-  }).format(value)
 }
 
 function DocumentCard({

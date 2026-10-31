@@ -37,6 +37,7 @@ export default function CourseEnrollmentPage() {
         ),
       )
     } catch (requestError) {
+      setOffers([])
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -72,7 +73,13 @@ export default function CourseEnrollmentPage() {
 
   return (
     <AdminPage
-      count={loading ? "Consultando secciones..." : `${offers.length} secciones`}
+      count={
+        loading
+          ? "Consultando secciones..."
+          : error && offers.length === 0
+            ? "No se pudieron consultar las secciones"
+            : `${offers.length} secciones`
+      }
       description="Inscríbete en una sección abierta de tu programa. El servidor valida período, cupo, fechas, duplicados y cruces de horario."
       title="Inscripción de cursos"
     >
@@ -88,7 +95,7 @@ export default function CourseEnrollmentPage() {
       )}
       {loading ? (
         <LoadingState rows={4} />
-      ) : !selectedPeriodId ? (
+      ) : error && offers.length === 0 ? null : !selectedPeriodId ? (
         <EmptyState
           description="Selecciona primero un período académico para consultar sus secciones."
           title="Período no seleccionado"

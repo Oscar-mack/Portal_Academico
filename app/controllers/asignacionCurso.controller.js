@@ -5,11 +5,144 @@ const Curso = db.cursos;
 const { getAlumnoIdsVisibles } = require("../utils/access.js");
 const { seCruzan } = require("../utils/horarios.js");
 const HorarioCatedratico = db.horariosCatedratico;
+const ROLES = require("../config/roles.js");
+
+async function enrollStudentFromSession(req, res) {
+  const transaction = await db.sequelize.transaction();
+  try {
+    if (Object.keys(req.body).length !== 1 || req.body.alumnoId !== undefined || req.body.cursoId !== undefined) {
+      await transaction.rollback();
+      return res.status(400).send({
+        message: "Para inscribirte envía únicamente ofertaCursoId; el alumno y el curso se identifican desde tu sesión y la sección."
+      });
+    }
+    const ofertaCursoId = Number(req.body.ofertaCursoId);
+    if (!Number.isInteger(ofertaCursoId) || ofertaCursoId <= 0) {
+      await transaction.rollback();
+      return res.status(400).send({ message: "ofertaCursoId debe ser un identificador válido." });
+    }
+    const alumno = await Alumno.findOne({
+      where: { usuarioId: req.userId, activo: true },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!alumno) {
+      await transaction.rollback();
+      return res.status(404).send({ message: "La cuenta no tiene un perfil de alumno activo." });
+    }
+    const oferta = await db.ofertasCurso.findByPk(ofertaCursoId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!oferta || !oferta.activo) {
+      await transaction.rollback();
+      return res.status(404).send({ message: "La sección no existe o está desactivada." });
+    }
+    const periodo = await db.periodosAcademicos.findByPk(oferta.periodoAcademicoId, {
+      transaction,
+      include: [{ model: db.ciclosAcademicos, as: "cicloAcademico" }]
+    });
+    if (!periodo || periodo.estado !== "abierto" || periodo.cicloAcademico?.estado !== "abierto") {
+      await transaction.rollback();
+      return res.status(409).send({ message: "El período académico de la sección está cerrado." });
+    }
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (hoy < oferta.fechaInscripcionInicio) {
+      await transaction.rollback();
+      return res.status(409).send({ message: `La inscripción para esta sección abre el ${oferta.fechaInscripcionInicio}.` });
+    }
+    if (hoy > oferta.fechaInscripcionFin) {
+      await transaction.rollback();
+      return res.status(409).send({ message: `La inscripción para esta sección cerró el ${oferta.fechaInscripcionFin}.` });
+    }
+    const curso = await Curso.findByPk(oferta.cursoId, { transaction });
+    if (!curso || !curso.activo) {
+      await transaction.rollback();
+      return res.status(409).send({ message: "El curso de esta sección está inactivo." });
+    }
+    if (curso.gradoCarreraId !== alumno.gradoCarreraId) {
+      await transaction.rollback();
+      return res.status(403).send({ message: "Esta sección no pertenece a tu programa académico." });
+    }
+    const catedratico = await db.catedraticos.findByPk(oferta.catedraticoId, { transaction });
+    if (!catedratico || !catedratico.activo) {
+      await transaction.rollback();
+      return res.status(409).send({ message: "El catedrático de esta sección está inactivo." });
+    }
+    const duplicada = await AsignacionCurso.findOne({
+      where: { alumnoId: alumno.id, cursoId: curso.id, periodoAcademicoId: periodo.id },
+      transaction
+    });
+    if (duplicada) {
+      await transaction.rollback();
+      return res.status(409).send({ message: "Ya estás inscrito en este curso durante el período seleccionado." });
+    }
+    const horariosNuevos = await HorarioCatedratico.findAll({
+      where: { ofertaCursoId: oferta.id },
+      transaction
+    });
+    if (!horariosNuevos.length) {
+      await transaction.rollback();
+      return res.status(409).send({ message: "La sección aún no tiene horario configurado; consulta con administración." });
+    }
+    const existentes = await AsignacionCurso.findAll({
+      where: { alumnoId: alumno.id, periodoAcademicoId: periodo.id },
+      attributes: ["cursoId", "ofertaCursoId"],
+      transaction
+    });
+    if (existentes.length) {
+      const ofertaIds = existentes.map(item => item.ofertaCursoId).filter(Boolean);
+      const legacyCourseIds = existentes.filter(item => !item.ofertaCursoId).map(item => item.cursoId);
+      const scheduleScopes = [];
+      if (ofertaIds.length) scheduleScopes.push({ ofertaCursoId: ofertaIds });
+      if (legacyCourseIds.length) {
+        scheduleScopes.push({ cursoId: legacyCourseIds, ofertaCursoId: null });
+      }
+      const horariosActuales = scheduleScopes.length
+        ? await HorarioCatedratico.findAll({
+          where: {
+            periodoAcademicoId: periodo.id,
+            [db.Sequelize.Op.or]: scheduleScopes
+          },
+          transaction
+        })
+        : [];
+      if (horariosNuevos.some(nuevo => horariosActuales.some(actual => seCruzan(nuevo, actual)))) {
+        await transaction.rollback();
+        return res.status(409).send({ message: "El horario de esta sección se cruza con otro curso en el período seleccionado." });
+      }
+    }
+    const inscritos = await AsignacionCurso.count({
+      where: { ofertaCursoId: oferta.id },
+      transaction
+    });
+    if (inscritos >= oferta.cupoMaximo) {
+      await transaction.rollback();
+      return res.status(409).send({ message: "La sección ya no tiene cupos disponibles." });
+    }
+    const asignacion = await AsignacionCurso.create({
+      alumnoId: alumno.id,
+      cursoId: curso.id,
+      periodo: `academico:${periodo.id}`,
+      periodoAcademicoId: periodo.id,
+      ofertaCursoId: oferta.id
+    }, { transaction });
+    await transaction.commit();
+    return res.status(201).send(asignacion);
+  } catch (error) {
+    if (!transaction.finished) await transaction.rollback();
+    if (error.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).send({ message: "Ya estás inscrito en este curso durante el período seleccionado." });
+    }
+    return res.status(500).send({ message: error.message || "No fue posible completar la inscripción." });
+  }
+}
 
 // RF-06 — Asignacion de cursos a alumnos (RN-04: un alumno puede tener varios cursos)
 // A2-eq: Toda la logica de validacion e insercion dentro de una transaccion con lock
 //        para evitar que solicitudes concurrentes excedan cupos o dupliquen inscripciones.
 exports.create = async (req, res) => {
+  if (req.userRole === ROLES.ALUMNO) return enrollStudentFromSession(req, res);
   const t = await db.sequelize.transaction();
   try {
     const { alumnoId, cursoId, periodo, periodoAcademicoId } = req.body;
@@ -112,7 +245,8 @@ exports.findAll = async (req, res) => {
       where,
       include: [
         { model: Alumno, as: "alumno" },
-        { model: Curso, as: "curso" }
+        { model: Curso, as: "curso" },
+        { model: db.ofertasCurso, as: "ofertaCurso" }
       ]
     });
     res.send(asignaciones);
@@ -126,7 +260,8 @@ exports.findOne = async (req, res) => {
     const asignacion = await AsignacionCurso.findByPk(req.params.id, {
       include: [
         { model: Alumno, as: "alumno" },
-        { model: Curso, as: "curso" }
+        { model: Curso, as: "curso" },
+        { model: db.ofertasCurso, as: "ofertaCurso" }
       ]
     });
     if (!asignacion) {
@@ -152,6 +287,12 @@ exports.update = async (req, res) => {
     if (!asignacion) {
       await t.rollback();
       return res.status(404).send({ message: `No se encontro la asignacion con id=${req.params.id}.` });
+    }
+    if (asignacion.ofertaCursoId && Object.keys(req.body).some(field =>
+      ["alumnoId", "cursoId", "periodo", "periodoAcademicoId"].includes(field)
+    )) {
+      await t.rollback();
+      return res.status(409).send({ message: "No se puede modificar una inscripción asociada a una sección; se conserva el historial de inscripción." });
     }
     const allowed = ["alumnoId", "cursoId", "periodo", "periodoAcademicoId"];
     if (Object.keys(req.body).some(field => !allowed.includes(field)) ||
@@ -207,6 +348,16 @@ exports.update = async (req, res) => {
       periodoAcademicoId !== asignacion.periodoAcademicoId ||
       periodo !== asignacion.periodo;
     if (cambiaronReferencias) {
+      if (asignacion.periodoAcademicoId && await db.tareas.count({
+        where: {
+          cursoId: asignacion.cursoId,
+          periodoAcademicoId: asignacion.periodoAcademicoId
+        },
+        transaction: t
+      })) {
+        await t.rollback();
+        return res.status(409).send({ message: "No se puede cambiar una inscripción relacionada con tareas; se conserva el historial académico." });
+      }
       const notaWhere = {
         alumnoId: asignacion.alumnoId,
         cursoId: asignacion.cursoId,
@@ -310,6 +461,15 @@ exports.delete = async (req, res) => {
         : { periodo: asignacion.periodo })
     };
     const notaExistente = await db.notas.count({ where: notaWhere, transaction: t });
+    const tareasExistentes = asignacion.periodoAcademicoId
+      ? await db.tareas.count({
+        where: {
+          cursoId: asignacion.cursoId,
+          periodoAcademicoId: asignacion.periodoAcademicoId
+        },
+        transaction: t
+      })
+      : 0;
     let calificacionesExistentes = 0;
     if (asignacion.periodoAcademicoId) {
       const evaluaciones = await db.evaluaciones.findAll({
@@ -327,9 +487,11 @@ exports.delete = async (req, res) => {
         });
       }
     }
-    if (notaExistente || calificacionesExistentes) {
+    if (notaExistente || calificacionesExistentes || tareasExistentes) {
       await t.rollback();
-      return res.status(409).send({ message: "No se puede eliminar una inscripción con calificaciones registradas." });
+      return res.status(409).send({ message: tareasExistentes
+        ? "No se puede eliminar una inscripción relacionada con tareas; se conserva el historial académico."
+        : "No se puede eliminar una inscripción con calificaciones registradas." });
     }
     await asignacion.destroy({ transaction: t });
     await t.commit();

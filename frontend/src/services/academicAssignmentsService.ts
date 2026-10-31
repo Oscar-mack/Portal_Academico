@@ -3,6 +3,7 @@ import type {
   ApiMessage,
   AsignacionCurso,
   HorarioCatedratico,
+  OfertaCurso,
   WeekDay,
 } from "../types/api"
 
@@ -35,7 +36,18 @@ export interface ScheduleInput {
   horaInicio: string
   horaFin: string
   periodoAcademicoId?: number
+  ofertaCursoId?: number
   periodo?: string
+}
+
+export interface CourseOfferInput {
+  cursoId: number
+  catedraticoId: number
+  periodoAcademicoId: number
+  codigoSeccion: string
+  cupoMaximo: number
+  fechaInscripcionInicio: string
+  fechaInscripcionFin: string
 }
 
 export const academicAssignmentsService = {
@@ -59,6 +71,32 @@ export const academicAssignmentsService = {
     apiRequest<HorarioCatedratico[]>(
       withQuery("/api/horarios-catedratico", { ...filters }),
     ),
+  listCourseOffers: (periodoAcademicoId?: number) =>
+    apiRequest<OfertaCurso[]>(
+      withQuery("/api/ofertas-curso", { periodoAcademicoId }),
+    ),
+  listAvailableCourseOffers: (periodoAcademicoId: number) =>
+    apiRequest<OfertaCurso[]>(
+      withQuery("/api/ofertas-curso/disponibles", { periodoAcademicoId }),
+    ),
+  createCourseOffer: (input: CourseOfferInput) =>
+    apiRequest<OfertaCurso>("/api/ofertas-curso", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateCourseOffer: (
+    id: number,
+    input: Partial<Pick<CourseOfferInput, "cupoMaximo" | "fechaInscripcionInicio" | "fechaInscripcionFin">> & { activo?: boolean },
+  ) =>
+    apiRequest<OfertaCurso>(`/api/ofertas-curso/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  enrollInCourseOffer: (ofertaCursoId: number) =>
+    apiRequest<AsignacionCurso>("/api/asignaciones-curso", {
+      method: "POST",
+      body: JSON.stringify({ ofertaCursoId }),
+    }),
   getSchedule: (id: number) =>
     apiRequest<HorarioCatedratico>(`/api/horarios-catedratico/${id}`),
   createSchedule: (input: ScheduleInput) =>

@@ -68,8 +68,10 @@ export interface AsignacionCurso {
   cursoId: number
   periodo: string
   periodoAcademicoId?: number | null
+  ofertaCursoId?: number | null
   alumno?: Alumno
   curso?: Curso
+  ofertaCurso?: OfertaCurso
 }
 
 export type WeekDay =
@@ -89,8 +91,29 @@ export interface HorarioCatedratico {
   horaFin: string
   periodo: string
   periodoAcademicoId?: number | null
+  ofertaCursoId?: number | null
   catedratico?: Catedratico
   curso?: Curso
+}
+
+export interface OfertaCurso {
+  id: number
+  cursoId: number
+  catedraticoId: number
+  periodoAcademicoId: number
+  codigoSeccion: string
+  cupoMaximo: number
+  fechaInscripcionInicio: string
+  fechaInscripcionFin: string
+  activo: boolean
+  inscritos?: number
+  seatsAvailable?: number
+  registrationOpen?: boolean
+  registrationReason?: string | null
+  curso?: Curso
+  catedratico?: Catedratico
+  periodoAcademico?: PeriodoAcademico
+  horarios?: HorarioCatedratico[]
 }
 
 export type AcademicState = "abierto" | "cerrado"

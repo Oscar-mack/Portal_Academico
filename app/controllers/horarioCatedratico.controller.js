@@ -42,10 +42,16 @@ async function getHorariosVisibles(req) {
 			...(req.query.periodoAcademicoId ? { periodoAcademicoId: req.query.periodoAcademicoId } : {}),
 			...(req.query.periodo ? { periodo: req.query.periodo } : {})
 		},
-		attributes: ["cursoId"]
+		attributes: ["cursoId", "ofertaCursoId"]
 	});
-	const cursoIds = [...new Set(asignaciones.map(asignacion => asignacion.cursoId))];
-	return cursoIds.length > 0 ? { cursoId: cursoIds } : { id: [] };
+	const ofertaIds = [...new Set(asignaciones.map(asignacion => asignacion.ofertaCursoId).filter(Boolean))];
+	const cursosLegacyIds = [...new Set(asignaciones
+		.filter(asignacion => !asignacion.ofertaCursoId)
+		.map(asignacion => asignacion.cursoId))];
+	const scopes = [];
+	if (ofertaIds.length) scopes.push({ ofertaCursoId: ofertaIds });
+	if (cursosLegacyIds.length) scopes.push({ cursoId: cursosLegacyIds, ofertaCursoId: null });
+	return scopes.length ? { [db.Sequelize.Op.or]: scopes } : { id: [] };
 }
 
 async function puedeVerHorario(req, horario) {
@@ -57,15 +63,19 @@ async function puedeVerHorario(req, horario) {
 	}
 
 	const visibles = await getHorariosVisibles(req);
-	if (visibles.forbidden) return false;
-	if (visibles.id) return false;
-	if (visibles.cursoId) return visibles.cursoId.includes(horario.cursoId);
-	return false;
+	if (visibles.forbidden || visibles.id) return false;
+	return Boolean(await HorarioCatedratico.count({
+		where: { ...visibles, id: horario.id }
+	}));
 }
 
 exports.create = async (req, res) => {
 	try {
 		const { catedraticoId, cursoId, dia, horaInicio, horaFin, periodo, periodoAcademicoId } = req.body;
+		const ofertaCursoId = req.body.ofertaCursoId === undefined ||
+			req.body.ofertaCursoId === null || req.body.ofertaCursoId === ""
+			? null
+			: Number(req.body.ofertaCursoId);
 		if (!catedraticoId || !cursoId || !dia || !horaInicio || !horaFin) {
 			return res.status(400).send({ message: "catedraticoId, cursoId, dia, horaInicio y horaFin son requeridos." });
 		}
@@ -98,6 +108,24 @@ exports.create = async (req, res) => {
 		const filtroPeriodo = periodoAcademico
 			? { periodoAcademicoId: periodoAcademico.id }
 			: { periodo: periodoEfectivo };
+		let ofertaCurso = null;
+		if (ofertaCursoId !== null) {
+			if (!Number.isInteger(ofertaCursoId) || ofertaCursoId <= 0) {
+				return res.status(400).send({ message: "ofertaCursoId debe ser un identificador válido." });
+			}
+			ofertaCurso = await db.ofertasCurso.findByPk(ofertaCursoId);
+			if (!ofertaCurso || ofertaCurso.cursoId !== Number(cursoId) ||
+				ofertaCurso.catedraticoId !== Number(catedraticoId) ||
+				ofertaCurso.periodoAcademicoId !== Number(periodoAcademicoId)) {
+				return res.status(400).send({ message: "El horario debe coincidir con el curso, catedrático y período de la sección." });
+			}
+			if (!ofertaCurso.activo) {
+				return res.status(409).send({ message: "No se puede agregar horario a una sección desactivada." });
+			}
+			if (await AsignacionCurso.count({ where: { ofertaCursoId: ofertaCurso.id } })) {
+				return res.status(409).send({ message: "No se puede agregar horario después de que alumnos se inscribieron en la sección." });
+			}
+		}
 		const delCatedratico = await HorarioCatedratico.findAll({
 			where: { catedraticoId, dia, ...filtroPeriodo }
 		});
@@ -107,7 +135,8 @@ exports.create = async (req, res) => {
 
 		const horario = await HorarioCatedratico.create({
 			catedraticoId, cursoId, dia, horaInicio, horaFin, periodo: periodoEfectivo,
-			...(periodoAcademico ? { periodoAcademicoId: periodoAcademico.id } : {})
+			...(periodoAcademico ? { periodoAcademicoId: periodoAcademico.id } : {}),
+			...(ofertaCurso ? { ofertaCursoId: ofertaCurso.id } : {})
 		});
 		res.status(201).send(horario);
 	} catch (error) {
@@ -197,6 +226,13 @@ exports.update = async (req, res) => {
 				return res.status(409).send({ message: "No se puede cambiar el horario después de crear evaluaciones para ese curso y período." });
 			}
 		}
+		if (horario.ofertaCursoId && await AsignacionCurso.count({
+			where: { ofertaCursoId: horario.ofertaCursoId },
+			transaction
+		})) {
+			await transaction.rollback();
+			return res.status(409).send({ message: "No se puede modificar un horario con alumnos inscritos en la sección." });
+		}
 		const dia = req.body.dia === undefined ? horario.dia : req.body.dia;
 		const horaInicio = req.body.horaInicio === undefined ? horario.horaInicio : req.body.horaInicio;
 		const horaFin = req.body.horaFin === undefined ? horario.horaFin : req.body.horaFin;
@@ -252,6 +288,13 @@ exports.delete = async (req, res) => {
 				await transaction.rollback();
 				return res.status(409).send({ message: "No se puede eliminar un horario relacionado con evaluaciones existentes." });
 			}
+		}
+		if (horario.ofertaCursoId && await AsignacionCurso.count({
+			where: { ofertaCursoId: horario.ofertaCursoId },
+			transaction
+		})) {
+			await transaction.rollback();
+			return res.status(409).send({ message: "No se puede eliminar un horario con alumnos inscritos en la sección." });
 		}
 		await horario.destroy({ transaction });
 		await transaction.commit();

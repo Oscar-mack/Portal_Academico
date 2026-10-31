@@ -493,39 +493,48 @@ export default function FinancialModulePage({
         )}
 
         {view === "charges" && (
-          <FilterBar
-            onSearchChange={setQuery}
-            placeholder="Buscar por concepto, descripción o alumno..."
-            search={query}
-          >
-            <SelectInput
-              aria-label="Filtrar por estado"
-              className="sm:max-w-44"
-              onChange={(event) => setStateFilter(event.target.value)}
-              value={stateFilter}
+          <>
+            {canCheckout && (
+              <p className="border-b border-line bg-canvas/35 px-5 py-3 text-xs leading-5 text-muted sm:px-6">
+                Aquí aparecen únicamente los cargos emitidos para esta cuenta o
+                estudiante. Cada cargo muestra el concepto, monto y moneda que
+                se cobrarán; no se puede modificar el importe desde el cliente.
+              </p>
+            )}
+            <FilterBar
+              onSearchChange={setQuery}
+              placeholder="Buscar por concepto, descripción o alumno..."
+              search={query}
             >
-              <option value="">Todos los estados</option>
-              {CHARGE_STATES.map((state) => (
-                <option key={state} value={state}>
-                  {state}
-                </option>
-              ))}
-            </SelectInput>
-            <TextInput
-              aria-label="Fecha inicial"
-              className="sm:max-w-40"
-              onChange={(event) => setStartDate(event.target.value)}
-              type="date"
-              value={startDate}
-            />
-            <TextInput
-              aria-label="Fecha final"
-              className="sm:max-w-40"
-              onChange={(event) => setEndDate(event.target.value)}
-              type="date"
-              value={endDate}
-            />
-          </FilterBar>
+              <SelectInput
+                aria-label="Filtrar por estado"
+                className="sm:max-w-44"
+                onChange={(event) => setStateFilter(event.target.value)}
+                value={stateFilter}
+              >
+                <option value="">Todos los estados</option>
+                {CHARGE_STATES.map((state) => (
+                  <option key={state} value={state}>
+                    {state}
+                  </option>
+                ))}
+              </SelectInput>
+              <TextInput
+                aria-label="Fecha inicial"
+                className="sm:max-w-40"
+                onChange={(event) => setStartDate(event.target.value)}
+                type="date"
+                value={startDate}
+              />
+              <TextInput
+                aria-label="Fecha final"
+                className="sm:max-w-40"
+                onChange={(event) => setEndDate(event.target.value)}
+                type="date"
+                value={endDate}
+              />
+            </FilterBar>
+          </>
         )}
 
         {loading ? (
@@ -621,8 +630,12 @@ export default function FinancialModulePage({
             </DataTable>
           ) : (
             <EmptyState
-              description="No hay cargos visibles con los filtros actuales."
-              title="Sin cargos"
+              description={
+                canCheckout
+                  ? "No hay cargos emitidos para esta cuenta o estudiante en el período y filtros seleccionados. Si esperabas un cobro, consulta con administración."
+                  : "No hay cargos visibles con los filtros actuales."
+              }
+              title={canCheckout ? "No hay cargos disponibles para pagar" : "Sin cargos"}
             />
           )
         ) : view === "payments" ? (

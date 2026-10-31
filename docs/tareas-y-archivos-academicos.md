@@ -1,37 +1,135 @@
-# Propuesta para tareas y archivos académicos
+# Fase 2: tareas académicas y gestión de archivos
 
-## Estado actual
+## Estado de esta rama
 
-El proyecto tiene evaluaciones con puntajes y calificaciones individuales, pero no tiene un modelo de tareas, fechas de publicación o vencimiento, instrucciones, entregas, ni filtros por vencimiento. `AsignacionCurso` representa la inscripción de un alumno a un curso/período; no representa una actividad.
+La rama de revisión integra evaluaciones, tareas, entregas, materiales, autoinscripción y pagos. Las migraciones 001–006 se probaron en PostgreSQL local desechable; nunca se ejecutaron en Neon Production. No se cambiaron Render, variables de entorno reales, credenciales ni despliegues.
 
-El centro de documentos existente genera PDFs académicos/financieros. No tiene un selector de archivos ni rutas multipart, servicio de almacenamiento, metadatos de archivos compartidos o entregados, ni descargas de entregas. No se debe presentar ese centro como un sistema de carga documental.
+El cambio de evaluaciones de la fase anterior se mantiene separado: una evaluación es un componente de calificación; una tarea es una actividad con instrucciones, fechas y entrega de archivo; una nota final publicada es un tercer recurso distinto.
 
-## Modelo y rutas propuestos
+## Arquitectura implementada
 
-| Recurso | Modelo sugerido | Rutas sugeridas |
+- `Tarea` se relaciona con un curso, período y docente responsable. Los destinatarios no se guardan en una lista manipulable por el cliente: se derivan de `asignaciones_cursos` al consultar y mostrar el roster.
+- `EntregaTarea` vincula alumno, tarea, archivo y fecha de entrega. Las versiones se conservan; el último envío determina el estado visible.
+- `MaterialCurso` vincula el archivo compartido al curso y período, con docente y estado activo.
+- `AdjuntoTarea` vincula archivos de instrucciones a la tarea.
+- `ArchivoAcademico` conserva metadatos y una clave privada de almacenamiento. `AuditoriaTarea` registra operaciones de carga y cambios.
+- Las asociaciones Sequelize se registran en `app/models/index.js`; los controladores y las rutas están en `app/controllers` y `app/routes`.
+- En el frontend se integró `AcademicWorkPage` al menú y al servicio compartido `academicWorkService`. El docente puede crear/editar/desactivar tareas, adjuntar documentos, publicar materiales y revisar estado/entregas de alumnos. El alumno ve tareas y materiales de sus inscripciones/períodos, filtra sus estados y entrega archivos. El administrador tiene consulta institucional de solo lectura.
+
+## Endpoints implementados
+
+| Método y ruta | Acceso | Comportamiento |
 |---|---|---|
-| Tarea | `Tarea`: curso, período, catedrático responsable, título, descripción, instrucciones, `publicadaEn`, `fechaLimite`, estado y auditoría | `POST /api/cursos/:cursoId/tareas`, `GET /api/tareas`, `GET /api/tareas/:id`, `PUT /api/tareas/:id`, `DELETE /api/tareas/:id` |
-| Destinatarios | `TareaAlumno`: tarea e inscripción (`asignacionCursoId`), con índice único | El servidor crea los destinatarios desde las inscripciones del mismo curso/período al publicar; no acepta una lista arbitraria de IDs del cliente |
-| Entrega | `EntregaTarea`: destinatario, alumno, recurso almacenado y fecha de entrega; conserva versiones si se permiten reenvíos | `POST /api/tareas/:id/entregas`, `GET /api/tareas/:id/entregas` para el docente autorizado, `GET /api/tareas/:id/mi-entrega` para el alumno |
-| Material de curso | `MaterialCurso`: curso, período, docente, título, descripción y recurso almacenado | `POST /api/cursos/:cursoId/materiales`, `GET /api/cursos/:cursoId/materiales`, `DELETE /api/materiales/:id` |
-| Archivo | `Archivo`: clave privada del objeto, nombre original saneado, MIME, tamaño, hash, propietario y relación de dominio | `POST /api/archivos/subidas`, `POST /api/archivos/:id/confirmar`, `GET /api/archivos/:id/descarga` |
+| `GET /api/tareas?cursoId=&periodoAcademicoId=&estado=` | admin, docente, alumno | Alumno: tareas publicadas para sus inscripciones exactas y estado de su propia entrega. Docente: tareas de sus horarios; admin: consulta institucional. |
+| `POST /api/tareas` | docente; admin con `catedraticoId` | Crear con curso, período, título, descripción, instrucciones y fechas. Curso/período y horario docente se validan en backend. |
+| `GET /api/tareas/:id` | admin, docente, alumno inscrito | Detalle seguro, incluyendo adjuntos; al alumno solo se devuelve su propia entrega. |
+| `PUT /api/tareas/:id` | docente responsable; admin | Editar texto/fechas mientras el período está abierto y todavía no hay entregas. |
+| `DELETE /api/tareas/:id` | docente responsable; admin | Desactivación lógica. No se permite si existen entregas. |
+| `POST /api/tareas/:id/adjuntos` | docente responsable | Carga de un adjunto privado para la tarea. |
+| `GET /api/tareas/:id/entregas` | docente responsable; admin | Lista inscritos del curso/período y estado; expone archivos de entrega solo a personal autorizado. |
+| `POST /api/tareas/:id/entregas` | alumno inscrito | Carga entrega con plazo y período abierto; el servidor obtiene la identidad del JWT. |
+| `GET /api/tareas/:id/mi-entrega` | alumno | Devuelve la entrega propia o `null`; otras inscripciones reciben 403. |
+| `GET /api/materiales?cursoId=&periodoAcademicoId=` | admin, docente, alumno inscrito | Lista materiales activos en sus cursos/períodos autorizados. |
+| `POST /api/materiales/cursos/:cursoId?periodoAcademicoId=` | docente responsable | Publica un material con título, descripción y archivo. |
+| `DELETE /api/materiales/:id` | docente propietario | Desactivación lógica en período abierto. |
+| `GET /api/archivos-academicos/:id/descarga` | admin, docente autorizado, alumno autorizado | Autoriza el recurso y genera URL privada firmada con vencimiento de 60 segundos. |
 
-Las rutas no deben permitir que un cliente elija `alumnoId`, `catedraticoId` o una inscripción ajena. El servidor obtiene la identidad del JWT y verifica la inscripción exacta al curso/período. Para docentes, exige que el horario/asignación del docente coincida con el curso y período. Los cambios requieren período abierto; al cerrar el período se conservan tareas, entregas y materiales históricos.
+No se agregó acceso de padre/tutor a tareas ni archivos. Tampoco se agregaron endpoints ficticios ni se reutilizaron endpoints de asignación de cursos como si fueran tareas.
 
-## Validaciones y autorización
+## Permisos y reglas
 
-- Título e instrucciones con límites de longitud; fecha límite posterior a publicación; destinatarios solo con inscripción del mismo curso y período. Si se requiere distinguir inscripciones activas de históricas, primero habrá que definir ese estado porque el modelo actual no lo contiene.
-- Estado del alumno calculado en servidor: pendiente, entregada o vencida según entrega y fechas. Las notas de una evaluación y las notas finales publicadas siguen siendo recursos separados.
-- Allowlist de extensiones y MIME, comprobación de firma del contenido, tamaño máximo configurable y nombres de objeto generados por el servidor. Rechazar contenido ejecutable y no confiar en el MIME declarado por el navegador.
-- Acceso de alumnos limitado a sus propias tareas, materiales y entregas; docentes solo acceden a cursos/períodos que tienen asignados; padres no reciben acceso hasta que exista una política explícita para las tareas.
-- Descargas privadas mediante autorización de API y URL firmada de vida corta. Registrar actor, recurso y operaciones de carga/descarga en auditoría.
+- JWT y middleware por rol siguen siendo obligatorios. El backend resuelve el perfil activo desde el usuario autenticado; no confía en un `alumnoId` enviado por el alumno.
+- Inscripciones, tareas, horarios y materiales deben coincidir en curso y período. Los docentes solo gestionan tareas de su perfil y horario; la creación exige horario exacto.
+- Las escrituras requieren período abierto. Las fechas deben estar dentro del período y el límite debe ser posterior a la publicación.
+- Solo se publican tareas activas cuando llega la fecha de publicación. La entrega requiere inscripción exacta, plazo vigente y período abierto.
+- El estado de tarea para el alumno se calcula en servidor (`pendiente`, `entregada`, `vencida`). Las entregas pertenecen únicamente al alumno autenticado. La descarga de archivos también revalida el contexto.
+- El cambio de inscripciones relacionadas con tareas conserva historial; la migración usa claves foráneas restrictivas y trigger de validación.
+- Las cargas aceptan PDF, DOCX, XLSX, PPTX, TXT, JPG/JPEG y PNG; se valida extensión, MIME declarado y firma inicial, con límite de 20 MiB por archivo y hash SHA-256. El cliente no puede escoger la clave de almacenamiento.
+- **Limitación de seguridad pendiente:** validar firmas iniciales no inspecciona el contenido interno de archivos Office/ZIP ni detecta malware. Antes de operación institucional se recomienda integrar antivirus/escaneo y política de cuarentena/retención; no se afirma que exista antivirus en esta implementación.
 
-## Almacenamiento y despliegue
+## Almacenamiento y operación
 
-Usar almacenamiento de objetos persistente compatible con el despliegue (por ejemplo, S3/R2 o un servicio equivalente), no memoria del proceso, disco efímero de Render ni base64 en tablas. Guardar solo metadatos y una clave privada en PostgreSQL. Las credenciales y límites se configurarían mediante secretos de despliegue autorizados; esta propuesta no cambia Render, Neon ni variables de entorno.
+La integración usa Cloudflare R2 mediante la API S3 compatible de AWS SDK. Los objetos son privados; la API retransmite la carga mediante streaming, por lo que puede aplicar el límite antes de finalizar la persistencia. No se usa memoria completa del archivo ni disco local de Render. En PostgreSQL quedan metadatos y la clave privada; el cliente solo recibe una URL firmada breve después de una autorización.
 
-Antes de habilitar cargas se debe elegir el proveedor, definir límites institucionales, retención y política de antivirus, crear migraciones reversibles e integrar pruebas del servicio. No se ejecutó ni se debe ejecutar ninguna migración de producción como parte de esta revisión.
+Variables requeridas **solo para configurar posteriormente el backend**, nunca en el frontend ni en Git:
 
-## Reutilización existente
+```text
+R2_ACCOUNT_ID
+R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY
+R2_BUCKET_NAME
+```
 
-`GET /api/evaluaciones` ya existe y ahora admite acceso de alumno restringido a sus inscripciones de curso/período, incluyendo solo su propio puntaje individual. `POST /api/evaluaciones`, `PUT /api/evaluaciones/:id`, `GET/POST /api/evaluaciones/:id/calificaciones`, `GET /api/notas` y `GET /api/dashboard` se mantienen para sus funciones actuales. Ninguna ruta actual cubre tareas, entregas de archivos o materiales compartidos.
+Crear un bucket privado y credenciales limitadas a ese bucket, guardar secretos en el gestor de secretos del despliegue, rotarlos y no compartirlos. No se añadieron valores ni se cambiaron entornos existentes. Si no se configura R2, las cargas fallan explícitamente con HTTP 503; no hay almacenamiento simulado.
+
+Precios consultados para la propuesta, sujetos a región/tarifa vigente, impuestos y cambios del proveedor: R2 Standard publica aproximadamente US$0.015/GB-mes, operaciones Clase A US$4.50 por millón y Clase B US$0.36 por millón, con 10 GB-mes, 1 millón A y 10 millones B de nivel gratuito mensual y egreso a Internet sin cargo. AWS S3 Standard publica aproximadamente US$0.023/GB-mes en regiones de referencia y puede cobrar transferencia de salida. Confirmar cotización y tier en el momento de adoptar.
+
+Fuentes oficiales:
+
+- [R2 pricing](https://developers.cloudflare.com/r2/pricing/)
+- [R2 límites](https://developers.cloudflare.com/r2/platform/limits/)
+- [URLs prefirmadas R2](https://developers.cloudflare.com/r2/api/s3/presigned-urls/)
+- [S3 pricing](https://aws.amazon.com/s3/pricing/)
+
+## Esquema propuesto
+
+La migración aditiva `scripts/migrations/005-academic-tasks-and-files.sql` crea:
+
+- `tareas`: curso, período, docente, contenido, fechas y estado.
+- `archivos_academicos`: clave del objeto, nombre, MIME, tamaño, SHA-256 y usuario que cargó.
+- `adjuntos_tarea`: relación tarea-archivo.
+- `materiales_curso`: archivo compartido asociado a curso/período/docente.
+- `entregas_tarea`: tarea, alumno, archivo y fecha; conserva múltiples envíos.
+- `auditoria_tareas`: actor, acción, recurso y detalle; trigger impide actualizar o borrar auditoría.
+- Índices de consulta y triggers para validar horario/período y entrega/inscripción/plazo.
+
+La migración 005 se aplicó y revirtió en una base PostgreSQL local desechable, no en producción. Antes de aprobarla todavía debe compararse con el esquema real de Neon; los triggers no reemplazan las validaciones del controlador.
+
+## Evaluaciones y límites conocidos
+
+`GET /api/evaluaciones` para alumnos se limita a las combinaciones curso/período de sus inscripciones y devuelve solo su calificación. Las pantallas existentes muestran curso, evaluación y puntaje máximo y distinguen la evaluación individual de la nota final publicada (`GET /api/notas`). Docente/admin conservan sus rutas de creación y calificación bajo autorización. La suite contiene pruebas de alumno inscrito, no inscrito y rol no autorizado; no se agregaron permisos generales.
+
+Las limitaciones de esta fase son: no se probaron credenciales ni operaciones reales de R2; no se desplegó el esquema; no hay antivirus; no existe acceso de padres; el roster se basa en las inscripciones almacenadas (el modelo actual no expone estado de inscripción); el cliente no ofrece reenvío visible tras una primera entrega aunque el backend conserva versiones; y se debe revisar si la fecha límite inclusive y la configuración horaria coinciden con la política institucional.
+
+## Pruebas locales
+
+La prueba de integración añade cobertura del flujo docente-alumno, filtros de estado, curso/período, autorización, archivos falsos con MIME permitido, descarga firmada y aislamiento de entregas. El servicio R2 se sustituye por un stub local en esa prueba; no valida conectividad con proveedor real.
+
+Comandos de validación desde esta rama:
+
+```bash
+cd frontend && npm run typecheck
+cd frontend && npm run build
+cd .. && npx --yes --package=node@22 --call 'npm test'
+git diff --check
+```
+
+Resultado final: backend **50/50**, typecheck, build y `git diff --check` correctos. No ejecutar migraciones 005 ni 006 en Neon Production hasta aprobación expresa.
+
+## Validación de la migración 005 (PostgreSQL 16 local desechable)
+
+Se probó en un contenedor Docker descartable (nunca contra Neon). Esquema base: `sequelize.sync()` con los modelos anteriores a la migración 002, seguido de la secuencia 001→006.
+
+- Verificado: creación de 6 tablas, 16 FK (`ON DELETE RESTRICT`), índices, CHECK (`fechaLimite > fechaPublicacion`, título no vacío, tamaño 1..20 MiB) y UNIQUE (`storageKey`, `archivoId`).
+- Triggers: rechazan tarea sin horario docente/curso/período, tarea en período cerrado, entrega de alumno no inscrito, fuera de plazo o a tarea inactiva; aceptan los casos válidos; la auditoría rechaza UPDATE/DELETE.
+- Los modelos Sequelize consultan correctamente las tablas migradas.
+- `005-...down.sql`: se bloqueó al existir una tarea; sin datos eliminó solo los objetos de 005 y la migración se reaplicó correctamente.
+- `006-...down.sql`: se bloqueó al existir una oferta; sin datos eliminó solo los objetos de 006 y la migración se reaplicó correctamente.
+- Los tres triggers de 005 y los dos de 006 aceptaron los casos válidos y rechazaron los contextos incoherentes, la falta de inscripción/cupo y la modificación de auditoría.
+
+No verificado: ejecución contra una copia real de Neon (puede diferir del esquema base reconstruido), pruebas de carga/concurrencia ni R2 real.
+
+## Inscripción de cursos y pagos (cambios de revisión posteriores)
+
+La inscripción anterior solo permitía POST administrativo y almacenaba alumno/curso/período; no existían secciones, cupos ni fechas de matrícula. Por eso se agregó una oferta de sección explícita en la migración aditiva `scripts/migrations/006-course-offerings-and-self-enrollment.sql`:
+
+- `ofertas_curso` relaciona curso, catedrático y período; define código de sección, cupo máximo, intervalo de inscripción y estado.
+- Los bloques de `horario_catedraticos` y las inscripciones de `asignacion_cursos` pueden relacionarse con `ofertaCursoId`; filas históricas quedan `NULL` y no se reclasifican.
+- `GET /api/ofertas-curso/disponibles?periodoAcademicoId=` lista solo secciones del programa del alumno autenticado y comunica cupos, horario y motivos de no disponibilidad.
+- `POST /api/asignaciones-curso` acepta autoinscripción de alumno únicamente con `{ ofertaCursoId }`. El servidor resuelve su alumno desde JWT y valida curso/programa, estado y fechas del período/sección, curso duplicado, cupos, horario configurado y cruces. La reserva bloquea la fila de oferta dentro de una transacción; un trigger PostgreSQL vuelve a proteger la capacidad.
+- Admin crea/actualiza ofertas desde la interfaz, configura bloques de sección en Horarios docentes y conserva el flujo administrativo histórico de asignaciones. Los horarios de una sección no pueden cambiarse luego de que existan inscripciones.
+- El `.down.sql` de 006 se bloquea si existen ofertas o asociaciones; no elimina filas históricas ni columnas previas. Se verificó localmente la secuencia 001→006, el bloqueo de la reversión con una oferta, la reversión sin ofertas y la reaplicación.
+
+Pagos ya tenían rutas reales: `GET /api/cargos`, `GET /api/pagos` y `POST /api/pagos/checkout` permiten admin/alumno/padre según corresponda. Alumno se restringe a su perfil; el padre a alumnos vinculados. El concepto y monto provienen de cargos emitidos por administración (no existe catálogo de conceptos); el frontend muestra concepto, monto y moneda. Se mejoró el estado sin Stripe configurado a HTTP 503 con mensaje explícito, y la pantalla de retorno sigue consultando `GET /api/pagos`; solo el webhook firmado confirma pagos.
+
+Las pruebas nuevas usan una fábrica Stripe stub local (no se genera ningún pago real) y cubren autoinscripción por sección, identidad desde JWT, cupo, fecha de apertura, duplicados, programa, cruce de horario, consulta de pagos por alumno/padre y proveedor no configurado.

@@ -12,16 +12,23 @@ const app = express();
 const REQUIRED_SCHEMA = {
   ciclos_academicos: ["id", "nombre", "fechaInicio", "fechaFin", "estado"],
   periodos_academicos: ["id", "cicloAcademicoId", "nombre", "tipo", "fechaInicio", "fechaFin", "estado"],
-  asignacion_cursos: ["periodoAcademicoId"],
-  horario_catedraticos: ["periodoAcademicoId"],
+  asignacion_cursos: ["periodoAcademicoId", "ofertaCursoId"],
+  horario_catedraticos: ["periodoAcademicoId", "ofertaCursoId"],
   nota: ["periodoAcademicoId", "publicadaEn"],
   evaluaciones: ["cursoId", "catedraticoId", "periodoAcademicoId", "puntajeMaximo"],
   calificaciones_evaluacion: ["evaluacionId", "alumnoId", "valor"],
   auditoria_notas: ["notaId", "usuarioId", "valorAnterior", "valorNuevo"],
+  tareas: ["cursoId", "catedraticoId", "periodoAcademicoId", "titulo", "fechaPublicacion", "fechaLimite"],
+  archivos_academicos: ["storageKey", "nombreOriginal", "mimeType", "sizeBytes", "sha256", "subidoPorUsuarioId"],
+  adjuntos_tarea: ["tareaId", "archivoId"],
+  materiales_curso: ["cursoId", "catedraticoId", "periodoAcademicoId", "archivoId", "titulo"],
+  entregas_tarea: ["tareaId", "alumnoId", "archivoId", "entregadaEn"],
+  auditoria_tareas: ["tareaId", "archivoId", "usuarioId", "accion"],
   cargos: ["alumnoId", "montoOriginal", "moneda"],
   pagos: ["cargoId", "stripePaymentIntentId", "metodoPago"],
   eventos_stripe: ["stripeEventId", "tipo", "pagoId"],
-  requisitos_solvencia_documentos: ["tipoDocumento", "requiere_solvencia"]
+  requisitos_solvencia_documentos: ["tipoDocumento", "requiere_solvencia"],
+  ofertas_curso: ["cursoId", "catedraticoId", "periodoAcademicoId", "codigoSeccion", "cupoMaximo", "fechaInscripcionInicio", "fechaInscripcionFin"]
 };
 
 const REQUIRED_TRIGGERS = [
@@ -29,9 +36,14 @@ const REQUIRED_TRIGGERS = [
   "calificaciones_evaluacion_validar_biu",
   "evaluaciones_maximo_calificaciones_bu",
   "auditoria_notas_inmutable_bud",
+  "tareas_validar_contexto_biu",
+  "entregas_tarea_validar_bi",
+  "auditoria_tareas_inmutable_bud",
   "pagos_validar_cargo_biu",
   "cargos_proteger_pagos_bu",
-  "cargos_no_delete_con_historial_bd"
+  "cargos_no_delete_con_historial_bd",
+  "horarios_validar_oferta_biu",
+  "asignaciones_validar_oferta_biu"
 ];
 
 async function findMissingSchema() {
@@ -125,6 +137,7 @@ require("./app/routes/catedratico.routes")(app);
 require("./app/routes/alumno.routes")(app);
 require("./app/routes/curso.routes")(app);
 require("./app/routes/asignacionCurso.routes")(app);
+require("./app/routes/ofertaCurso.routes")(app);
 require("./app/routes/horarioCatedratico.routes")(app);
 require("./app/routes/padreAlumno.routes")(app);
 require("./app/routes/nota.routes")(app);
@@ -133,6 +146,9 @@ require("./app/routes/pago.routes")(app);
 require("./app/routes/cicloAcademico.routes")(app);
 require("./app/routes/periodoAcademico.routes")(app);
 require("./app/routes/evaluacion.routes")(app);
+require("./app/routes/tarea.routes")(app);
+require("./app/routes/materialCurso.routes")(app);
+require("./app/routes/archivoAcademico.routes")(app);
 require("./app/routes/cargo.routes")(app);
 require("./app/routes/dashboard.routes")(app);
 require("./app/routes/requisitoSolvencia.routes")(app);

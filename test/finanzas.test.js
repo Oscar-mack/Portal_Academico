@@ -24,7 +24,9 @@ const originalError = console.error;
 const stripeCalls = { created: [], expired: [], refunds: [] };
 let sessionCounter = 0;
 let sessionStatus = "open";
+let sessionRetrieveShouldFail = false;
 let refundShouldFail = false;
+let refundStatus = "succeeded";
 
 function stripeMock() {
   return {
@@ -35,7 +37,10 @@ function stripeMock() {
           sessionCounter += 1;
           return { id: `cs_test_${sessionCounter}`, url: `https://checkout.stripe.test/${sessionCounter}` };
         },
-        retrieve: async id => ({ id, status: sessionStatus, url: `https://checkout.stripe.test/${id}` }),
+        retrieve: async id => {
+          if (sessionRetrieveShouldFail) throw new Error("Stripe unavailable");
+          return { id, status: sessionStatus, url: `https://checkout.stripe.test/${id}` };
+        },
         expire: async id => {
           stripeCalls.expired.push(id);
           if (sessionStatus === "complete") throw new Error("session already complete");
@@ -48,8 +53,22 @@ function stripeMock() {
       create: async input => {
         if (refundShouldFail) throw new Error("refund failed");
         stripeCalls.refunds.push(input);
-        return { id: `re_test_${stripeCalls.refunds.length}` };
-      }
+        return {
+          id: `re_test_${stripeCalls.refunds.length}`,
+          status: refundStatus,
+          amount: 10000,
+          currency: "usd",
+          payment_intent: input.payment_intent,
+          metadata: input.metadata
+        };
+      },
+      retrieve: async id => ({
+        id,
+        status: refundStatus,
+        amount: 10000,
+        currency: "usd",
+        payment_intent: `pi_test_${id.replace("re_test_", "")}`
+      })
     },
     webhooks: Stripe.webhooks
   };
@@ -76,13 +95,17 @@ function firmar(payload) {
 }
 
 let eventCounter = 0;
-function enviarWebhook(type, session) {
-  eventCounter += 1;
-  const { body, header } = firmar({
-    id: `evt_fin_${eventCounter}`, object: "event", type, data: { object: session }
-  });
+function postWebhook(event) {
+  const { body, header } = firmar(event);
   return request(app).post("/api/pagos/webhook")
     .set("Content-Type", "application/json").set("Stripe-Signature", header).send(body);
+}
+
+function enviarWebhook(type, session) {
+  eventCounter += 1;
+  return postWebhook({
+    id: `evt_fin_${eventCounter}`, object: "event", type, data: { object: session }
+  });
 }
 
 const crearCargo = (token, extra = {}) => request(app).post("/api/cargos").set(auth(token)).send({
@@ -222,6 +245,7 @@ test("flujo completo: checkout, webhook firmado, saldo, doble pago y nuevo cargo
   assert.match(checkout.body.url, /^https:\/\/checkout\.stripe\.test\//);
   const sesion = stripeCalls.created.at(-1);
   assert.equal(sesion.success_url, "https://portal.test/pago-exitoso");
+  assert.equal(sesion.cancel_url, "https://portal.test/pago-cancelado");
   assert.equal(sesion.line_items[0].price_data.unit_amount, 10000);
   assert.equal(sesion.line_items[0].price_data.currency, "usd");
 
@@ -293,6 +317,41 @@ test("el webhook no exige FRONTEND_URL; el checkout en producción sí", async (
   } finally {
     process.env.NODE_ENV = entorno;
     process.env.FRONTEND_URL = frontend;
+  }
+});
+
+test("el webhook distingue configuración ausente de firma inválida para permitir reintentos", async () => {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  const { body, header } = firmar({
+    id: "evt_config_retry", object: "event", type: "customer.created", data: { object: {} }
+  });
+  try {
+    delete process.env.STRIPE_WEBHOOK_SECRET;
+    const config = await request(app).post("/api/pagos/webhook")
+      .set("Content-Type", "application/json").set("Stripe-Signature", header).send(body);
+    assert.equal(config.status, 503);
+
+    process.env.STRIPE_WEBHOOK_SECRET = secret;
+    const firma = await request(app).post("/api/pagos/webhook")
+      .set("Content-Type", "application/json").set("Stripe-Signature", "t=1,v1=invalida").send(body);
+    assert.equal(firma.status, 400);
+  } finally {
+    process.env.STRIPE_WEBHOOK_SECRET = secret;
+  }
+});
+
+test("un fallo al recuperar una sesión Checkout existente se comunica como 502", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Recuperar checkout" })).body;
+  const primero = await iniciarCheckout(ctx.tokens.alumno1, { cargoId: cargo.id });
+  assert.equal(primero.status, 200);
+  try {
+    sessionRetrieveShouldFail = true;
+    const retry = await iniciarCheckout(ctx.tokens.alumno1, { cargoId: cargo.id });
+    assert.equal(retry.status, 502);
+    assert.match(retry.body.message, /verificar la sesión/);
+    assert.equal((await db.pagos.findByPk(primero.body.pagoId)).estado, "pendiente");
+  } finally {
+    sessionRetrieveShouldFail = false;
   }
 });
 
@@ -380,6 +439,7 @@ test("anular un pago confirmado lo revierte contablemente sin borrarlo y permite
 });
 
 test("anular con reembolso crea el Refund en Stripe y, si falla, no cambia el pago", async () => {
+  refundStatus = "succeeded";
   const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Reembolso" })).body;
   const checkout = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id });
   await pagarPorWebhook(checkout.body, cargo, 100);
@@ -401,6 +461,117 @@ test("anular con reembolso crea el Refund en Stripe y, si falla, no cambia el pa
 
   assert.equal((await request(app).patch(url).set(auth(ctx.tokens.admin))
     .send({ motivo: "Devolución", reembolsar: "si" })).status, 400);
+});
+
+test("un reembolso pendiente no anula el pago hasta la confirmación firmada de Stripe", async () => {
+  refundStatus = "pending";
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Refund pendiente" })).body;
+  const checkout = await iniciarCheckout(ctx.tokens.alumno1, { cargoId: cargo.id });
+  await pagarPorWebhook(checkout.body, cargo, 100);
+  const pago = await db.pagos.findByPk(checkout.body.pagoId);
+
+  const res = await request(app).patch(`/api/pagos/${pago.id}/anular`)
+    .set(auth(ctx.tokens.admin)).send({ motivo: "Reembolso solicitado", reembolsar: true });
+  assert.equal(res.status, 202);
+  await pago.reload();
+  assert.equal(pago.estado, "pagado");
+  assert.equal(pago.anuladoEn, null);
+  assert.ok(pago.stripeRefundId);
+
+  refundStatus = "succeeded";
+  const evento = await enviarWebhook("refund.updated", {
+    id: pago.stripeRefundId,
+    status: "succeeded",
+    amount: 10000,
+    currency: "usd",
+    payment_intent: pago.stripePaymentIntentId,
+    metadata: { pagoId: String(pago.id) }
+  });
+  assert.equal(evento.status, 200);
+  await pago.reload();
+  assert.equal(pago.estado, "anulado");
+  assert.ok(pago.anuladoEn);
+  refundStatus = "succeeded";
+});
+
+test("un webhook de reembolso reconcilia Stripe exitoso si falla la escritura local", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Reconciliar reembolso" })).body;
+  const checkout = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id });
+  await pagarPorWebhook(checkout.body, cargo, 100);
+  const pago = await db.pagos.findByPk(checkout.body.pagoId);
+  const updateOriginal = db.pagos.prototype.update;
+  let falloEscritura = true;
+  db.pagos.prototype.update = function(values, options) {
+    if (falloEscritura && values.estado === "anulado") {
+      falloEscritura = false;
+      throw new Error("database write failed after Stripe refund");
+    }
+    return updateOriginal.call(this, values, options);
+  };
+  try {
+    const resultado = await request(app).patch(`/api/pagos/${pago.id}/anular`)
+      .set(auth(ctx.tokens.admin)).send({ motivo: "Devolución", reembolsar: true });
+    assert.equal(resultado.status, 500);
+    await pago.reload();
+    assert.equal(pago.estado, "pagado");
+
+    const refundId = `re_test_${stripeCalls.refunds.length}`;
+    const evento = await enviarWebhook("refund.created", {
+      id: refundId,
+      status: "succeeded",
+      amount: 10000,
+      currency: "usd",
+      payment_intent: pago.stripePaymentIntentId,
+      metadata: { pagoId: String(pago.id) }
+    });
+    assert.equal(evento.status, 200);
+    await pago.reload();
+    assert.equal(pago.estado, "anulado");
+    assert.equal(pago.stripeRefundId, refundId);
+  } finally {
+    db.pagos.prototype.update = updateOriginal;
+  }
+});
+
+test("si falla la escritura del webhook de pago, Stripe puede reintentar el mismo evento", async () => {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto: "Retry webhook" })).body;
+  const checkout = await iniciarCheckout(ctx.tokens.alumno1, { cargoId: cargo.id });
+  const pago = await db.pagos.findByPk(checkout.body.pagoId);
+  const evento = {
+    id: `evt_fin_db_retry_${++eventCounter}`,
+    object: "event",
+    type: "checkout.session.completed",
+    data: { object: {
+      id: checkout.body.sessionId,
+      payment_status: "paid",
+      amount_total: 10000,
+      currency: "usd",
+      payment_intent: `pi_test_${pago.id}`,
+      metadata: { pagoId: String(pago.id), cargoId: String(cargo.id) }
+    } }
+  };
+  const createOriginal = db.eventosStripe.create;
+  let falloEscritura = true;
+  db.eventosStripe.create = async function(...args) {
+    if (falloEscritura) {
+      falloEscritura = false;
+      throw new Error("event persistence failed");
+    }
+    return createOriginal.apply(this, args);
+  };
+  try {
+    const primero = await postWebhook(evento);
+    assert.equal(primero.status, 500);
+    await pago.reload();
+    assert.equal(pago.estado, "pendiente");
+    const retry = await postWebhook(evento);
+    assert.equal(retry.status, 200);
+    await pago.reload();
+    assert.equal(pago.estado, "pagado");
+    assert.equal(await db.eventosStripe.count({ where: { stripeEventId: evento.id } }), 1);
+  } finally {
+    db.eventosStripe.create = createOriginal;
+  }
 });
 
 test("una sesión expirada se reemplaza automáticamente por un Checkout nuevo", async () => {

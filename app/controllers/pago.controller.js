@@ -205,7 +205,12 @@ async function crearSesionParaCargo(req, res) {
   }
 
   if (reutilizarSesionId) {
-    const sesion = await stripe.checkout.sessions.retrieve(reutilizarSesionId).catch(() => null);
+    let sesion = null;
+    try {
+      sesion = await stripe.checkout.sessions.retrieve(reutilizarSesionId);
+    } catch (stripeError) {
+      console.error("Error al consultar sesión Stripe:", stripeError.message, "pagoId:", pago.id);
+    }
     if (!sesion) {
       return res.status(502).send({ message: "No se pudo comunicar con Stripe. Intenta nuevamente en unos momentos.", pagoId: pago.id });
     }
@@ -290,7 +295,8 @@ exports.crearSesion = async (req, res) => {
     }
     return await crearSesionParaCargo(req, res);
   } catch (error) {
-    res.status(500).send({ message: error.message || "Error al crear la sesión de pago." });
+    console.error("Error al iniciar el checkout:", error.message);
+    res.status(500).send({ message: "No se pudo iniciar el pago por un error interno. Intenta nuevamente." });
   }
 };
 
@@ -306,6 +312,10 @@ exports.webhook = async (req, res) => {
     const stripe = getStripe();
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
+    if (err.code === PROVIDER_UNAVAILABLE) {
+      console.error("Configuración de Stripe incompleta para el webhook:", err.message);
+      return res.status(503).send({ message: "El procesamiento de pagos no está configurado temporalmente." });
+    }
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -313,7 +323,10 @@ exports.webhook = async (req, res) => {
     "checkout.session.completed",
     "checkout.session.expired",
     "checkout.session.async_payment_succeeded",
-    "checkout.session.async_payment_failed"
+    "checkout.session.async_payment_failed",
+    "refund.created",
+    "refund.updated",
+    "refund.failed"
   ]);
   let duplicate = false;
   try {
@@ -329,9 +342,19 @@ exports.webhook = async (req, res) => {
       }
 
       const session = event.data?.object;
-      const pagoId = tiposRelevantes.has(event.type)
+      let pagoId = event.type.startsWith("refund.")
         ? session?.metadata?.pagoId
-        : null;
+        : (tiposRelevantes.has(event.type) ? session?.metadata?.pagoId : null);
+      if (!pagoId && event.type.startsWith("refund.") && session?.payment_intent) {
+        const paymentIntentId = typeof session.payment_intent === "string"
+          ? session.payment_intent
+          : session.payment_intent.id;
+        const pagoPorIntent = await Pago.findOne({
+          where: { stripePaymentIntentId: paymentIntentId },
+          transaction
+        });
+        pagoId = pagoPorIntent?.id;
+      }
       let pago = null;
       if (pagoId) {
         const pagoSnapshot = await Pago.findByPk(pagoId, { transaction });
@@ -346,7 +369,36 @@ exports.webhook = async (req, res) => {
           console.error("Webhook: pago no encontrado", { eventId: event.id, pagoId });
         } else {
           const cargoIdMetadata = session.metadata?.cargoId;
-          if (pago.cargoId && String(pago.cargoId) !== String(cargoIdMetadata)) {
+          if (event.type.startsWith("refund.")) {
+            const paymentIntentId = typeof session.payment_intent === "string"
+              ? session.payment_intent
+              : session.payment_intent?.id;
+            const refundStatus = session.status;
+            const refundIsFull = Number.isSafeInteger(Number(session.amount)) &&
+              Number(session.amount) >= aCentavos(pago.monto);
+            const currencyMatches = typeof session.currency === "string" &&
+              session.currency.toLowerCase() === pago.moneda.toLowerCase();
+            const intentMatches = Boolean(
+              pago.stripePaymentIntentId && pago.stripePaymentIntentId === paymentIntentId
+            );
+            if (refundStatus === "succeeded" && refundIsFull && currencyMatches && intentMatches &&
+                pago.estado === "pagado") {
+              await pago.update({
+                estado: "anulado",
+                anuladoEn: new Date(),
+                motivoAnulacion: pago.motivoAnulacion || "Reembolso confirmado por Stripe.",
+                stripeRefundId: session.id
+              }, { transaction });
+            } else if (refundStatus === "failed" && pago.estado === "pagado" &&
+                intentMatches && session.id === pago.stripeRefundId) {
+              await pago.update({
+                stripeRefundId: null,
+                anuladoEn: null,
+                anuladoPorId: null,
+                motivoAnulacion: null
+              }, { transaction });
+            }
+          } else if (pago.cargoId && String(pago.cargoId) !== String(cargoIdMetadata)) {
             console.error("Webhook: el cargo de metadata no coincide", { eventId: event.id, pagoId });
             pago = null;
           } else if (pago.stripeSessionId && pago.stripeSessionId !== session.id) {
@@ -534,7 +586,7 @@ exports.anular = async (req, res) => {
       }
     }
 
-    const cambios = { anuladoEn: new Date(), anuladoPorId: req.userId, motivoAnulacion: motivo };
+    const cambios = {};
     let reembolsoId = null;
     if (pago.estado === "pendiente") {
       if (stripe) {
@@ -551,7 +603,12 @@ exports.anular = async (req, res) => {
           }
         }
       }
-      cambios.estado = "cancelado";
+      Object.assign(cambios, {
+        estado: "cancelado",
+        anuladoEn: new Date(),
+        anuladoPorId: req.userId,
+        motivoAnulacion: motivo
+      });
     } else {
       if (reembolsar) {
         if (!pago.stripePaymentIntentId) {
@@ -559,19 +616,53 @@ exports.anular = async (req, res) => {
           return res.status(400).send({ message: "El pago no tiene un cobro de Stripe asociado para reembolsar." });
         }
         try {
-          const reembolso = await stripe.refunds.create({
-            payment_intent: pago.stripePaymentIntentId,
-            metadata: { pagoId: String(pago.id) }
-          }, { idempotencyKey: `portal-reembolso-${pago.id}` });
+          const reembolso = pago.stripeRefundId
+            ? await stripe.refunds.retrieve(pago.stripeRefundId)
+            : await stripe.refunds.create({
+              payment_intent: pago.stripePaymentIntentId,
+              metadata: { pagoId: String(pago.id) }
+            }, { idempotencyKey: `portal-reembolso-${pago.id}` });
           reembolsoId = reembolso.id;
+          if (reembolso.status === "succeeded") {
+            Object.assign(cambios, {
+              estado: "anulado",
+              anuladoEn: new Date(),
+              anuladoPorId: req.userId,
+              motivoAnulacion: motivo,
+              stripeRefundId: reembolsoId
+            });
+          } else if (reembolso.status === "failed" || reembolso.status === "canceled") {
+            await transaction.rollback();
+            return res.status(502).send({
+              message: "Stripe no completó el reembolso. El pago permanece confirmado; revisa el estado en Stripe."
+            });
+          } else {
+            await pago.update({
+              stripeRefundId: reembolsoId,
+              anuladoPorId: req.userId,
+              motivoAnulacion: motivo
+            }, { transaction });
+            await transaction.commit();
+            return res.status(202).send({
+              id: pago.id,
+              estado: pago.estado,
+              reembolsado: false,
+              message: "El reembolso está pendiente de confirmación de Stripe; el estado del pago no se modificó."
+            });
+          }
         } catch (stripeError) {
           console.error("Error al reembolsar en Stripe:", stripeError.message, "pagoId:", pago.id);
           await transaction.rollback();
           return res.status(502).send({ message: "Stripe no pudo procesar el reembolso; el pago no fue modificado." });
         }
-        cambios.stripeRefundId = reembolsoId;
+      } else {
+        Object.assign(cambios, {
+          estado: "anulado",
+          anuladoEn: new Date(),
+          anuladoPorId: req.userId,
+          motivoAnulacion: motivo
+        });
       }
-      cambios.estado = "anulado";
     }
     await pago.update(cambios, { transaction });
     await transaction.commit();

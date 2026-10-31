@@ -33,6 +33,7 @@ import type {
   Solvencia,
 } from "../types/api"
 import { FormActions, Notice } from "./admin/GradosCarrerasPage"
+import { money } from "../lib/money"
 
 const CHARGE_STATES: CargoState[] = [
   "pendiente",
@@ -44,13 +45,6 @@ const CHARGE_STATES: CargoState[] = [
 
 function fullName(person?: { nombre: string; apellido: string }) {
   return person ? `${person.nombre} ${person.apellido}` : "Sin información"
-}
-
-function money(currency: string, value: number | string) {
-  return new Intl.NumberFormat("es-GT", {
-    style: "currency",
-    currency,
-  }).format(Number(value))
 }
 
 function date(value?: string | null) {

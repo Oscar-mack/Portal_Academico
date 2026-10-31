@@ -763,4 +763,122 @@ test("webhook: los cuatro eventos, duplicados y pagos confirmados que no se libe
 
   const cargos = (await request(app).get("/api/cargos").set(auth(ctx.tokens.padre1))).body;
   assert.equal(cargos.find(c => c.id === cargo.id).montoPagado, 60);
+
+async function pagoPagado(concepto, token = "padre1") {
+  const cargo = (await crearCargo(ctx.tokens.admin, { concepto })).body;
+  const checkout = await iniciarCheckout(ctx.tokens[token], { cargoId: cargo.id });
+  await pagarPorWebhook(checkout.body, cargo, 100);
+  return db.pagos.findByPk(checkout.body.pagoId);
+}
+const refundEvt = (pago, extra = {}) => ({
+  id: `re_ev_${pago.id}`, status: "succeeded", amount: 10000, currency: "usd",
+  payment_intent: pago.stripePaymentIntentId, metadata: { pagoId: String(pago.id) }, ...extra
+});
+
+test("webhook de reembolso: parcial, moneda o PaymentIntent distintos no anulan el pago", async () => {
+  const pago = await pagoPagado("Refund inconsistente");
+  for (const extra of [{ amount: 5000 }, { currency: "gtq" }, { payment_intent: "pi_otro" }]) {
+    const r = await enviarWebhook("refund.updated", refundEvt(pago, extra));
+    assert.equal(r.status, 200);
+    await pago.reload();
+    assert.equal(pago.estado, "pagado", JSON.stringify(extra));
+  }
+});
+
+test("webhook de reembolso: estados pending/created no anulan y el evento duplicado es idempotente", async () => {
+  const pago = await pagoPagado("Refund pending evt");
+  assert.equal((await enviarWebhook("refund.created", refundEvt(pago, { status: "pending" }))).status, 200);
+  await pago.reload();
+  assert.equal(pago.estado, "pagado");
+
+  const evento = { id: `evt_dup_refund_${++eventCounter}`, object: "event", type: "refund.updated",
+    data: { object: refundEvt(pago) } };
+  assert.equal((await postWebhook(evento)).status, 200);
+  const dup = await postWebhook(evento);
+  assert.equal(dup.status, 200);
+  assert.equal(dup.body.duplicate, true);
+  await pago.reload();
+  assert.equal(pago.estado, "anulado");
+});
+
+test("webhook de reembolso: eventos fuera de orden no revierten un pago anulado", async () => {
+  const pago = await pagoPagado("Refund fuera de orden");
+  await enviarWebhook("refund.updated", refundEvt(pago));
+  await pago.reload();
+  assert.equal(pago.estado, "anulado");
+  const refundId = pago.stripeRefundId;
+  for (const status of ["pending", "failed"]) {
+    assert.equal((await enviarWebhook("refund.updated", refundEvt(pago, { status }))).status, 200);
+  }
+  await pago.reload();
+  assert.equal(pago.estado, "anulado");
+  assert.equal(pago.stripeRefundId, refundId);
+  assert.ok(pago.anuladoEn);
+});
+
+test("refund.failed limpia el reembolso pendiente y el pago sigue pagado", async () => {
+  refundStatus = "pending";
+  const pago = await pagoPagado("Refund fallido evt");
+  const res = await request(app).patch(`/api/pagos/${pago.id}/anular`)
+    .set(auth(ctx.tokens.admin)).send({ motivo: "Prueba", reembolsar: true });
+  refundStatus = "succeeded";
+  assert.equal(res.status, 202);
+  await pago.reload();
+  const refundId = pago.stripeRefundId;
+  assert.ok(refundId);
+  assert.equal((await enviarWebhook("refund.failed", refundEvt(pago, { id: refundId, status: "failed" }))).status, 200);
+  await pago.reload();
+  assert.equal(pago.estado, "pagado");
+  assert.equal(pago.stripeRefundId, null);
+});
+
+test("webhook de reembolso: fallo de BD devuelve 500 sin registrar el evento y el reintento concilia", async () => {
+  const pago = await pagoPagado("Refund retry BD");
+  const evento = { id: `evt_refund_retry_${++eventCounter}`, object: "event", type: "refund.updated",
+    data: { object: refundEvt(pago) } };
+  const original = db.pagos.prototype.update;
+  db.pagos.prototype.update = () => { throw new Error("neon unavailable"); };
+  try {
+    assert.equal((await postWebhook(evento)).status, 500);
+  } finally {
+    db.pagos.prototype.update = original;
+  }
+  assert.equal(await db.eventosStripe.count({ where: { stripeEventId: evento.id } }), 0);
+  assert.equal((await postWebhook(evento)).status, 200);
+  await pago.reload();
+  assert.equal(pago.estado, "anulado");
+});
+
+test("anular con reembolso: un Refund parcial de Stripe no anula el pago", async () => {
+  const pago = await pagoPagado("Refund parcial api");
+  const original = stripeMock;
+  const base = stripeMock().refunds.create;
+  assert.ok(base);
+  pagoController._testing.setStripeFactory(() => {
+    const m = original();
+    m.refunds.create = async input => ({ id: "re_parcial", status: "succeeded", amount: 4000,
+      currency: "usd", payment_intent: input.payment_intent });
+    return m;
+  });
+  try {
+    const res = await request(app).patch(`/api/pagos/${pago.id}/anular`)
+      .set(auth(ctx.tokens.admin)).send({ motivo: "Parcial", reembolsar: true });
+    assert.equal(res.status, 502);
+  } finally {
+    pagoController._testing.setStripeFactory(original);
+  }
+  await pago.reload();
+  assert.equal(pago.estado, "pagado");
+});
+
+test("solo el administrador puede anular/reembolsar pagos", async () => {
+  const pago = await pagoPagado("Refund permisos");
+  for (const t of ["padre1", "alumno1", "catedratico"]) {
+    if (!ctx.tokens[t]) continue;
+    const r = await request(app).patch(`/api/pagos/${pago.id}/anular`)
+      .set(auth(ctx.tokens[t])).send({ motivo: "No autorizado", reembolsar: true });
+    assert.equal(r.status, 403, t);
+  }
+  assert.equal((await request(app).patch(`/api/pagos/${pago.id}/anular`).send({ motivo: "x" })).status, 403);
+  assert.equal((await db.pagos.findByPk(pago.id)).estado, "pagado");
 });

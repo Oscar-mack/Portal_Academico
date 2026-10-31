@@ -313,7 +313,7 @@ exports.webhook = async (req, res) => {
               : session.payment_intent?.id;
             const refundStatus = session.status;
             const refundIsFull = Number.isSafeInteger(Number(session.amount)) &&
-              Number(session.amount) >= aCentavos(pago.monto);
+              Number(session.amount) === aCentavos(pago.monto);
             const currencyMatches = typeof session.currency === "string" &&
               session.currency.toLowerCase() === pago.moneda.toLowerCase();
             const intentMatches = Boolean(
@@ -494,6 +494,18 @@ exports.anular = async (req, res) => {
               metadata: { pagoId: String(pago.id) }
             }, { idempotencyKey: `portal-reembolso-${pago.id}` });
           reembolsoId = reembolso.id;
+          const coincide = Number(reembolso.amount) === aCentavos(pago.monto) &&
+            String(reembolso.currency || "").toLowerCase() === pago.moneda.toLowerCase() &&
+            (typeof reembolso.payment_intent === "string"
+              ? reembolso.payment_intent
+              : reembolso.payment_intent?.id) === pago.stripePaymentIntentId;
+          if (!coincide) {
+            console.error("Reembolso no coincide con el pago", { pagoId: pago.id, refundId: reembolso.id });
+            await transaction.rollback();
+            return res.status(502).send({
+              message: "El reembolso de Stripe no coincide con el pago (importe, moneda o cobro). El pago no fue modificado; revisa Stripe."
+            });
+          }
           if (reembolso.status === "succeeded") {
             Object.assign(cambios, {
               estado: "anulado",

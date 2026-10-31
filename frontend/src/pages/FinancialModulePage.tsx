@@ -65,7 +65,7 @@ function chargeTone(state: CargoState): StatusTone {
 function paymentTone(state: Pago["estado"]): StatusTone {
   if (state === "pagado") return "success"
   if (state === "fallido") return "danger"
-  if (state === "cancelado") return "neutral"
+  if (state === "cancelado" || state === "anulado") return "neutral"
   return "warning"
 }
 
@@ -99,6 +99,7 @@ export default function FinancialModulePage({
   const [editor, setEditor] = useState<Cargo | "create" | null>(null)
   const [cancelling, setCancelling] = useState<Cargo | null>(null)
   const [checkout, setCheckout] = useState<Cargo | null>(null)
+  const [voiding, setVoiding] = useState<Pago | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -158,6 +159,7 @@ export default function FinancialModulePage({
         financeService.listCharges({
           ...filters,
           periodoAcademicoId: selectedPeriodId ?? undefined,
+          incluirSinPeriodo: true,
           incluirAnulados: true,
         }),
         financeService.listPayments(filters),
@@ -259,7 +261,8 @@ export default function FinancialModulePage({
             String(form.get("fechaEmision") ?? "") || undefined,
           fechaVencimiento:
             String(form.get("fechaVencimiento") ?? "") || null,
-          cicloAcademicoId: cycleValue,
+          // El backend deduce el ciclo desde el período; enviar ambos puede provocar un conflicto.
+          cicloAcademicoId: periodValue ? null : cycleValue,
           periodoAcademicoId: periodValue,
         }
         await financeService.createCharge(input)
@@ -299,6 +302,38 @@ export default function FinancialModulePage({
         requestError instanceof Error
           ? requestError.message
           : "No fue posible anular el cargo.",
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function submitVoid(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!voiding) return
+    const form = new FormData(event.currentTarget)
+    const reason = String(form.get("motivo") ?? "").trim()
+    if (reason.length < 5) {
+      setError("Indica el motivo (mínimo 5 caracteres).")
+      return
+    }
+    setSaving(true)
+    setError("")
+    try {
+      const result = await financeService.cancelPayment(voiding.id, {
+        motivo: reason,
+        ...(voiding.estado === "pagado" && form.get("reembolsar") === "on"
+          ? { reembolsar: true }
+          : {}),
+      })
+      setNotice(result.message ?? "El pago fue anulado correctamente.")
+      setVoiding(null)
+      await load()
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "No fue posible anular el pago.",
       )
     } finally {
       setSaving(false)
@@ -486,7 +521,7 @@ export default function FinancialModulePage({
         )}
 
         {notice && <Notice message={notice} onClose={() => setNotice("")} />}
-        {error && !editor && !cancelling && !checkout && (
+        {error && !editor && !cancelling && !checkout && !voiding && (
           <div className="mx-5 mt-5 sm:mx-6">
             <ErrorState message={error} onRetry={load} />
           </div>
@@ -650,6 +685,9 @@ export default function FinancialModulePage({
                   <th className="px-4 py-3.5">Método</th>
                   <th className="px-4 py-3.5">Fecha</th>
                   <th className="px-6 py-3.5">Estado</th>
+                  {canManage && (
+                    <th className="px-6 py-3.5 text-right">Acciones</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -683,6 +721,29 @@ export default function FinancialModulePage({
                         {payment.estado}
                       </StatusBadge>
                     </td>
+                    {canManage && (
+                      <td className="px-6 py-4 text-right">
+                        {payment.estado === "pendiente" ||
+                        payment.estado === "pagado" ? (
+                          <button
+                            className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-50"
+                            onClick={() => {
+                              setError("")
+                              setVoiding(payment)
+                            }}
+                            type="button"
+                          >
+                            {payment.estado === "pagado"
+                              ? "Anular pago"
+                              : "Cancelar checkout"}
+                          </button>
+                        ) : payment.motivoAnulacion ? (
+                          <span className="text-xs text-muted">
+                            {payment.motivoAnulacion}
+                          </span>
+                        ) : null}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -901,7 +962,10 @@ export default function FinancialModulePage({
                   hint="Opcional"
                   label="Período académico"
                 >
-                  <SelectInput name="periodoAcademicoId">
+                  <SelectInput
+                    defaultValue={selectedPeriodId ?? ""}
+                    name="periodoAcademicoId"
+                  >
                     <option value="">Sin período relacionado</option>
                     {periods.map((period) => (
                       <option key={period.id} value={period.id}>
@@ -952,6 +1016,50 @@ export default function FinancialModulePage({
               error={error}
               label="Confirmar anulación"
               onCancel={() => setCancelling(null)}
+              saving={saving}
+            />
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        description="Los pagos no se eliminan: se conserva el registro contable con el motivo."
+        onClose={() => setVoiding(null)}
+        open={Boolean(voiding)}
+        title={
+          voiding?.estado === "pagado" ? "Anular pago" : "Cancelar checkout"
+        }
+      >
+        {voiding && (
+          <form onSubmit={submitVoid}>
+            <div className="space-y-5 px-6 py-6">
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                <p className="text-sm font-bold text-red-800">
+                  {voiding.concepto} · {money(voiding.moneda, voiding.monto)}
+                </p>
+                <p className="mt-1 text-xs text-red-700">
+                  {voiding.estado === "pagado"
+                    ? "El pago dejará de contar en el saldo y el cargo volverá a tener saldo pendiente."
+                    : "Se cerrará la sesión de Stripe pendiente."}
+                </p>
+              </div>
+              <FormField label="Motivo">
+                <TextAreaInput name="motivo" required />
+              </FormField>
+              {voiding.estado === "pagado" && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input name="reembolsar" type="checkbox" />
+                  <span>
+                    Reembolsar también el cobro en Stripe. Si no se marca, el
+                    dinero debe devolverse manualmente desde Stripe.
+                  </span>
+                </label>
+              )}
+            </div>
+            <FormActions
+              error={error}
+              label="Confirmar"
+              onCancel={() => setVoiding(null)}
               saving={saving}
             />
           </form>

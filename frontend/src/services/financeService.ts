@@ -31,6 +31,7 @@ export const financeService = {
       periodoAcademicoId?: number
       estado?: string
       incluirAnulados?: boolean
+      incluirSinPeriodo?: boolean
     } = {},
   ) => apiRequest<Cargo[]>(withQuery("/api/cargos", filters)),
   createCharge: (input: CargoInput) =>
@@ -60,6 +61,11 @@ export const financeService = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  cancelPayment: (id: number, input: { motivo: string; reembolsar?: boolean }) =>
+    apiRequest<ApiMessage & { id: number; estado: string; reembolsado: boolean }>(
+      `/api/pagos/${id}/anular`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
   listRequirements: () =>
     apiRequest<RequisitoSolvencia[]>("/api/requisitos-solvencia"),
   downloadAccountStatement: (

@@ -22,7 +22,7 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING(16),
       allowNull: false,
       defaultValue: "pendiente",
-      validate: { isIn: [["pendiente", "pagado", "fallido", "cancelado"]] }
+      validate: { isIn: [["pendiente", "pagado", "fallido", "cancelado", "anulado"]] }
     },
     cargoId: {
       type: DataTypes.INTEGER,
@@ -41,6 +41,18 @@ module.exports = (sequelize, DataTypes) => {
     },
     fechaPago: {
       type: DataTypes.DATE
+    },
+    anuladoEn: {
+      type: DataTypes.DATE
+    },
+    anuladoPorId: {
+      type: DataTypes.INTEGER
+    },
+    motivoAnulacion: {
+      type: DataTypes.TEXT
+    },
+    stripeRefundId: {
+      type: DataTypes.STRING(255)
     }
   });
 

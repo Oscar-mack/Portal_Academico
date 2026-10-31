@@ -222,7 +222,7 @@ export interface AuditoriaNota {
 }
 
 export type CargoState = "pendiente" | "parcial" | "pagado" | "vencido" | "anulado"
-export type PaymentState = "pendiente" | "pagado" | "fallido" | "cancelado"
+export type PaymentState = "pendiente" | "pagado" | "fallido" | "cancelado" | "anulado"
 export type CurrencyCode = "GTQ" | "USD"
 
 export interface Pago {
@@ -236,6 +236,8 @@ export interface Pago {
   metodoPago: string
   fechaPago?: string | null
   createdAt: string
+  anuladoEn?: string | null
+  motivoAnulacion?: string | null
   alumno?: Alumno
 }
 

@@ -11,8 +11,16 @@ En producción `server.js` se niega a iniciar si falta `JWT_SECRET` (>=32 caract
 `CORS_ORIGIN` (distinto de `*`). Stripe es opcional para que la API académica siga
 disponible: mientras falte `STRIPE_SECRET_KEY` o `STRIPE_WEBHOOK_SECRET`, Checkout
 responde `503` con las variables faltantes. Para habilitar pagos también configura
-`APP_URL` (URL HTTPS del backend para el webhook) y `FRONTEND_URL` (URL HTTPS de la
-aplicación web). Nunca versionar `.env`.
+`FRONTEND_URL` (URL HTTPS de la aplicación web, usada en los retornos de Checkout;
+sin ella Checkout responde `503`). `APP_URL` es informativa: el backend no la usa para
+crear sesiones y el webhook solo requiere `STRIPE_SECRET_KEY` y `STRIPE_WEBHOOK_SECRET`.
+Nunca versionar `.env`.
+
+Pagos: nunca se eliminan (`DELETE /api/pagos/:id` responde `405`). Un administrador usa
+`PATCH /api/pagos/:id/anular` con `motivo`: un pago `pendiente` pasa a `cancelado` (se
+expira la sesión de Stripe) y un pago `pagado` pasa a `anulado` (reversión contable; con
+`reembolsar: true` además se crea un Refund en Stripe). Requiere la migración 007, que
+debe aplicarse antes del despliegue (`/ready` responde `503` mientras falte).
 
 ## Backups y restauración (PostgreSQL)
 - Backup diario automático del proveedor (retención mínima 7 días) + `pg_dump` semanal guardado fuera del proveedor (retención 30 días):

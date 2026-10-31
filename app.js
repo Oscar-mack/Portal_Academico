@@ -25,7 +25,7 @@ const REQUIRED_SCHEMA = {
   entregas_tarea: ["tareaId", "alumnoId", "archivoId", "entregadaEn"],
   auditoria_tareas: ["tareaId", "archivoId", "usuarioId", "accion"],
   cargos: ["alumnoId", "montoOriginal", "moneda"],
-  pagos: ["cargoId", "stripePaymentIntentId", "metodoPago"],
+  pagos: ["cargoId", "stripePaymentIntentId", "metodoPago", "anuladoEn", "anuladoPorId", "motivoAnulacion", "stripeRefundId"],
   eventos_stripe: ["stripeEventId", "tipo", "pagoId"],
   requisitos_solvencia_documentos: ["tipoDocumento", "requiere_solvencia"],
   ofertas_curso: ["cursoId", "catedraticoId", "periodoAcademicoId", "codigoSeccion", "cupoMaximo", "fechaInscripcionInicio", "fechaInscripcionFin"]

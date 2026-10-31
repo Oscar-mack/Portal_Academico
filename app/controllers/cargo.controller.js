@@ -1,3 +1,4 @@
+const { Op } = require("sequelize");
 const db = require("../models");
 const ROLES = require("../config/roles.js");
 
@@ -101,6 +102,19 @@ exports.create = async (req, res) => {
         Number(montoOriginal) <= 0) {
       return res.status(400).send({ message: "alumnoId, concepto y montoOriginal positivo son requeridos." });
     }
+    if (!Number.isInteger(Number(alumnoId)) || Number(alumnoId) <= 0) {
+      return res.status(400).send({ message: "alumnoId debe ser un identificador válido." });
+    }
+    const conceptoLimpio = String(concepto).trim();
+    if (!conceptoLimpio || conceptoLimpio.length > 160) {
+      return res.status(400).send({ message: "El concepto es obligatorio y admite hasta 160 caracteres." });
+    }
+    const esFecha = valor => /^\d{4}-\d{2}-\d{2}$/.test(valor) && !Number.isNaN(Date.parse(valor));
+    for (const [campo, valor] of [["fechaEmision", fechaEmision], ["fechaVencimiento", fechaVencimiento]]) {
+      if (valor && !esFecha(valor)) {
+        return res.status(400).send({ message: `${campo} debe tener el formato AAAA-MM-DD.` });
+      }
+    }
     if (cents(montoOriginal) < 1 || Math.abs(Number(montoOriginal) * 100 - cents(montoOriginal)) > 1e-7) {
       return res.status(400).send({ message: "El monto debe expresarse en centavos exactos." });
     }
@@ -124,7 +138,7 @@ exports.create = async (req, res) => {
     }
     const cargo = await Cargo.create({
       alumnoId,
-      concepto,
+      concepto: conceptoLimpio,
       descripcion,
       montoOriginal: Number(montoOriginal).toFixed(2),
       moneda: monedaCargo,
@@ -135,7 +149,12 @@ exports.create = async (req, res) => {
     });
     res.status(201).send({ ...cargo.toJSON(), montoPagado: 0, saldoPendiente: Number(cargo.montoOriginal), estado: "pendiente", pagos: [] });
   } catch (error) {
-    res.status(400).send({ message: error.message || "Error al crear el cargo." });
+    // Los errores de validación son del cliente; cualquier otro (p. ej. esquema o base de datos) es del servidor.
+    const esValidacion = ["SequelizeValidationError", "SequelizeForeignKeyConstraintError"].includes(error.name);
+    if (!esValidacion) console.error("Error al crear el cargo:", error.message);
+    res.status(esValidacion ? 400 : 500).send({
+      message: esValidacion ? error.message : "No se pudo registrar el cargo por un error interno."
+    });
   }
 };
 
@@ -146,7 +165,12 @@ exports.findAll = async (req, res) => {
     const where = {};
     if (permitidos) where.alumnoId = permitidos;
     if (req.query.cicloAcademicoId) where.cicloAcademicoId = req.query.cicloAcademicoId;
-    if (req.query.periodoAcademicoId) where.periodoAcademicoId = req.query.periodoAcademicoId;
+    if (req.query.periodoAcademicoId) {
+      // Los cargos sin período (p. ej. carnet, mora) aplican a cualquier período y no deben ocultarse.
+      where.periodoAcademicoId = req.query.incluirSinPeriodo === "true"
+        ? { [Op.or]: [req.query.periodoAcademicoId, null] }
+        : req.query.periodoAcademicoId;
+    }
     if (req.query.incluirAnulados !== "true") where.anuladoEn = null;
     const cargos = await Cargo.findAll({
       where,

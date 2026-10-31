@@ -356,7 +356,7 @@ test("un fallo al recuperar una sesión Checkout existente se comunica como 502"
     sessionRetrieveShouldFail = true;
     const retry = await iniciarCheckout(ctx.tokens.alumno1, { cargoId: cargo.id });
     assert.equal(retry.status, 502);
-    assert.match(retry.body.message, /verificar la sesión/);
+    assert.match(retry.body.message, /comunicar con Stripe/);
     assert.equal((await db.pagos.findByPk(primero.body.pagoId)).estado, "pendiente");
   } finally {
     sessionRetrieveShouldFail = false;
@@ -763,6 +763,8 @@ test("webhook: los cuatro eventos, duplicados y pagos confirmados que no se libe
 
   const cargos = (await request(app).get("/api/cargos").set(auth(ctx.tokens.padre1))).body;
   assert.equal(cargos.find(c => c.id === cargo.id).montoPagado, 60);
+});
+
 
 async function pagoPagado(concepto, token = "padre1") {
   const cargo = (await crearCargo(ctx.tokens.admin, { concepto })).body;

@@ -173,6 +173,19 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
     }
   }
 
+  async function downloadFile(fileId: number) {
+    setError("")
+    try {
+      await academicWorkService.downloadFile(fileId)
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "No fue posible descargar el archivo.",
+      )
+    }
+  }
+
   async function deactivateTask(task: AcademicTask) {
     setBusyAction(task.id)
     setError("")
@@ -306,7 +319,7 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
                 {!!task.adjuntos?.length && (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {task.adjuntos.map((file) => (
-                      <button className="rounded-lg border border-line px-3 py-2 text-xs font-semibold text-brand-soft" key={file.id} onClick={() => academicWorkService.downloadFile(file.id)} type="button">
+                      <button className="rounded-lg border border-line px-3 py-2 text-xs font-semibold text-brand-soft" key={file.id} onClick={() => downloadFile(file.id)} type="button">
                         Descargar {file.nombreOriginal}
                       </button>
                     ))}
@@ -345,7 +358,7 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
                             <span>{submission.alumno.nombre} {submission.alumno.apellido}</span>
                             <span className="flex items-center gap-2">
                               <StatusBadge tone={statusTone(submission.estado)}>{submission.estado}</StatusBadge>
-                              {submission.entrega && <button className="font-semibold text-brand-soft underline" onClick={() => academicWorkService.downloadFile(submission.entrega!.archivo.id)} type="button">Descargar entrega</button>}
+                              {submission.entrega && <button className="font-semibold text-brand-soft underline" onClick={() => downloadFile(submission.entrega!.archivo.id)} type="button">Descargar entrega</button>}
                             </span>
                           </li>
                         ))}
@@ -406,7 +419,7 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
                   <h3 className="mt-1 font-bold">{material.titulo}</h3>
                   {material.descripcion && <p className="mt-1 text-sm text-muted">{material.descripcion}</p>}
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold text-brand-soft" onClick={() => academicWorkService.downloadFile(material.archivo.id)} type="button">Descargar {material.archivo.nombreOriginal}</button>
+                    <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold text-brand-soft" onClick={() => downloadFile(material.archivo.id)} type="button">Descargar {material.archivo.nombreOriginal}</button>
                     {canManage && <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold" disabled={busyAction === material.id} onClick={() => deactivateMaterial(material)} type="button">Desactivar</button>}
                   </div>
                 </article>

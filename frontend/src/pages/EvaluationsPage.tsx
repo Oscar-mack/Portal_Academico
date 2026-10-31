@@ -18,7 +18,12 @@ import {
   type Catedratico as TeacherRecord,
 } from "../services/catedraticosService"
 import { evaluationsService } from "../services/evaluationsService"
-import type { Curso, Evaluacion, EvaluacionInput } from "../types/api"
+import type {
+  Curso,
+  Evaluacion,
+  EvaluacionInput,
+  HorarioCatedratico,
+} from "../types/api"
 import GradeMatrix from "./GradeMatrix"
 import { FormActions, Notice } from "./admin/GradosCarrerasPage"
 
@@ -30,11 +35,14 @@ export default function EvaluationsPage({ user }: { user: AuthUser }) {
   const { periods, selectedPeriodId, selectedPeriod } = useAcademicPeriod()
   const [items, setItems] = useState<Evaluacion[]>([])
   const [courses, setCourses] = useState<Curso[]>([])
+  const [schedules, setSchedules] = useState<HorarioCatedratico[]>([])
   const [teachers, setTeachers] = useState<TeacherRecord[]>([])
   const [query, setQuery] = useState("")
   const [courseFilter, setCourseFilter] = useState("")
   const [teacherFilter, setTeacherFilter] = useState("")
   const [editor, setEditor] = useState<Evaluacion | "create" | null>(null)
+  const [creationPeriodId, setCreationPeriodId] = useState("")
+  const [creationTeacherId, setCreationTeacherId] = useState("")
   const [matrix, setMatrix] = useState<Evaluacion | null>(null)
   const [deactivating, setDeactivating] = useState<Evaluacion | null>(null)
   const [loading, setLoading] = useState(true)
@@ -49,13 +57,12 @@ export default function EvaluationsPage({ user }: { user: AuthUser }) {
       const periodFilter = selectedPeriodId ?? undefined
       const [evaluationRows, scheduleRows, courseRows] = await Promise.all([
         evaluationsService.list({ periodoAcademicoId: periodFilter }),
-        academicAssignmentsService.listSchedules({
-          periodoAcademicoId: periodFilter,
-        }),
+        academicAssignmentsService.listSchedules(),
         catalogsService.listCourses(user.rol === "admin"),
       ])
       setItems(evaluationRows)
       setCourses(courseRows)
+      setSchedules(scheduleRows)
       if (user.rol === "admin") {
         setTeachers(await catedraticosService.list())
       } else {
@@ -202,6 +209,8 @@ export default function EvaluationsPage({ user }: { user: AuthUser }) {
             className="h-11 rounded-xl bg-brand px-5 text-sm font-bold text-white hover:bg-brand-dark"
             onClick={() => {
               setError("")
+              setCreationPeriodId(String(selectedPeriodId ?? ""))
+              setCreationTeacherId("")
               setEditor("create")
             }}
             type="button"
@@ -416,13 +425,29 @@ export default function EvaluationsPage({ user }: { user: AuthUser }) {
             </FormField>
             {!record && user.rol === "admin" && (
               <FormField label="Catedrático">
-                <SelectInput name="catedraticoId" required>
+                <SelectInput
+                  name="catedraticoId"
+                  onChange={(event) =>
+                    setCreationTeacherId(event.target.value)
+                  }
+                  required
+                  value={creationTeacherId}
+                >
                   <option value="">Selecciona un catedrático</option>
-                  {teachers.map((teacher) => (
+                  {teachers
+                    .filter((teacher) =>
+                      schedules.some(
+                        (schedule) =>
+                          schedule.catedraticoId === teacher.id &&
+                          schedule.periodoAcademicoId ===
+                            Number(creationPeriodId),
+                      ),
+                    )
+                    .map((teacher) => (
                     <option key={teacher.id} value={teacher.id}>
                       {fullName(teacher)}
                     </option>
-                  ))}
+                    ))}
                 </SelectInput>
               </FormField>
             )}
@@ -432,7 +457,19 @@ export default function EvaluationsPage({ user }: { user: AuthUser }) {
                   <SelectInput name="cursoId" required>
                     <option value="">Selecciona un curso</option>
                     {courses
-                      .filter((course) => course.activo)
+                      .filter(
+                        (course) =>
+                          course.activo &&
+                          schedules.some(
+                            (schedule) =>
+                              schedule.cursoId === course.id &&
+                              schedule.periodoAcademicoId ===
+                                Number(creationPeriodId) &&
+                              (user.rol !== "admin" ||
+                                schedule.catedraticoId ===
+                                  Number(creationTeacherId)),
+                          ),
+                      )
                       .map((course) => (
                         <option key={course.id} value={course.id}>
                           {course.codigo} · {course.nombre}
@@ -442,15 +479,28 @@ export default function EvaluationsPage({ user }: { user: AuthUser }) {
                 </FormField>
                 <FormField label="Período académico">
                   <SelectInput
-                    defaultValue={selectedPeriodId ?? ""}
+                    onChange={(event) =>
+                      {
+                        setCreationPeriodId(event.target.value)
+                        setCreationTeacherId("")
+                      }
+                    }
                     name="periodoAcademicoId"
                     required
+                    value={creationPeriodId}
                   >
                     <option value="">Selecciona un período</option>
                     {periods.map((period) => (
-                      <option key={period.id} value={period.id}>
-                        {period.nombre} · {period.estado}
-                      </option>
+                      (user.rol === "admin" ||
+                        (period.estado === "abierto" &&
+                          schedules.some(
+                            (schedule) =>
+                              schedule.periodoAcademicoId === period.id,
+                          ))) && (
+                        <option key={period.id} value={period.id}>
+                          {period.nombre} · {period.estado}
+                        </option>
+                      )
                     ))}
                   </SelectInput>
                 </FormField>

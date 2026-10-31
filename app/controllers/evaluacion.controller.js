@@ -117,6 +117,55 @@ exports.findAll = async (req, res) => {
     for (const field of ["cursoId", "periodoAcademicoId"]) {
       if (req.query[field]) where[field] = req.query[field];
     }
+    if (req.userRole === ROLES.ALUMNO) {
+      const alumno = await Alumno.findOne({
+        where: { usuarioId: req.userId, activo: true }
+      });
+      if (!alumno) return res.status(403).send({ message: "No tienes un perfil de alumno activo asociado." });
+
+      for (const field of ["cursoId", "periodoAcademicoId"]) {
+        if (req.query[field] !== undefined &&
+            (!Number.isInteger(Number(req.query[field])) || Number(req.query[field]) <= 0)) {
+          return res.status(400).send({ message: `${field} debe ser un identificador válido.` });
+        }
+      }
+
+      const inscripciones = await AsignacionCurso.findAll({
+        where: {
+          alumnoId: alumno.id,
+          periodoAcademicoId: { [db.Sequelize.Op.ne]: null },
+          ...(req.query.cursoId ? { cursoId: req.query.cursoId } : {}),
+          ...(req.query.periodoAcademicoId
+            ? { periodoAcademicoId: req.query.periodoAcademicoId }
+            : {})
+        },
+        attributes: ["cursoId", "periodoAcademicoId"]
+      });
+      const cursosInscritos = [...new Map(inscripciones.map(inscripcion => [
+        `${inscripcion.cursoId}:${inscripcion.periodoAcademicoId}`,
+        { cursoId: inscripcion.cursoId, periodoAcademicoId: inscripcion.periodoAcademicoId }
+      ])).values()];
+      if (cursosInscritos.length === 0) return res.send([]);
+
+      where[db.Sequelize.Op.or] = cursosInscritos;
+      where.activo = true;
+      const rows = await Evaluacion.findAll({
+        where,
+        include: [
+          { model: Curso, as: "curso", attributes: ["id", "nombre", "codigo"] },
+          {
+            model: Calificacion,
+            as: "calificaciones",
+            where: { alumnoId: alumno.id },
+            required: false,
+            attributes: ["id", "valor"]
+          }
+        ],
+        order: [["id", "ASC"]]
+      });
+      return res.send(rows);
+    }
+
     if (req.userRole === ROLES.CATEDRATICO) {
       const docente = await Catedratico.findOne({ where: { usuarioId: req.userId } });
       if (!docente) return res.status(403).send({ message: "No tienes perfil de catedrático asociado." });
@@ -133,7 +182,7 @@ exports.findAll = async (req, res) => {
         ? cursosAutorizados.filter(id => id === Number(req.query.cursoId))
         : cursosAutorizados;
     } else if (req.userRole !== ROLES.ADMIN) {
-      return res.status(403).send({ message: "Solo administración y catedráticos pueden consultar evaluaciones." });
+      return res.status(403).send({ message: "Solo administración, catedráticos y alumnos pueden consultar evaluaciones." });
     }
     const rows = await Evaluacion.findAll({ where, order: [["id", "ASC"]] });
     res.send(rows);

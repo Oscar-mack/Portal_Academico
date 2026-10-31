@@ -347,6 +347,25 @@ test("períodos y evaluaciones calculan notas finales sin alterar períodos hist
   assert.equal(examen.status, 201, JSON.stringify(examen.body));
   assert.equal((await crearEvaluacion("Extra", 1)).status, 409);
 
+  const evaluacionesAlumno = await request(app)
+    .get(`/api/evaluaciones?cursoId=${ctx.c1}&periodoAcademicoId=${periodo.body.id}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(evaluacionesAlumno.status, 200);
+  assert.equal(evaluacionesAlumno.body.length, 2);
+  assert.ok(evaluacionesAlumno.body.every(item =>
+    item.curso.id === ctx.c1 &&
+    item.calificaciones.length === 0
+  ));
+  const evaluacionesOtroAlumno = await request(app)
+    .get("/api/evaluaciones")
+    .set(auth(ctx.tokens.alumno2));
+  assert.equal(evaluacionesOtroAlumno.status, 200);
+  assert.deepEqual(evaluacionesOtroAlumno.body, []);
+  assert.equal((await request(app).get("/api/evaluaciones")
+    .set(auth(ctx.tokens.padre1))).status, 403);
+  assert.equal((await request(app).get(`/api/evaluaciones/${tarea.body.id}/calificaciones`)
+    .set(auth(ctx.tokens.alumno1))).status, 403);
+
   const registrar = (evaluacionId, valor, motivo) => request(app)
     .post(`/api/evaluaciones/${evaluacionId}/calificaciones`)
     .set(auth(ctx.tokens.cat1))
@@ -358,6 +377,13 @@ test("períodos y evaluaciones calculan notas finales sin alterar períodos hist
   assert.equal(finalResponse.status, 200);
   assert.equal(finalResponse.body.notaFinal.valor, 85);
   assert.equal(finalResponse.body.notaFinal.estado, "aprobado");
+  const evaluacionesCalificadas = await request(app)
+    .get(`/api/evaluaciones?periodoAcademicoId=${periodo.body.id}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.ok(evaluacionesCalificadas.body.every(item =>
+    item.calificaciones.length === 1 &&
+    item.calificaciones[0].valor !== undefined
+  ));
   const borrarInscripcion = await request(app).delete(`/api/asignaciones-curso/${inscripcion.body.id}`)
     .set(auth(ctx.tokens.admin));
   assert.equal(borrarInscripcion.status, 409);

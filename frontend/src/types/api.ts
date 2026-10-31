@@ -147,6 +147,8 @@ export interface Evaluacion {
   nombre: string
   puntajeMaximo: number | string
   activo: boolean
+  curso?: Pick<Curso, "id" | "nombre" | "codigo">
+  calificaciones?: Array<Pick<CalificacionEvaluacion, "id" | "valor">>
 }
 
 export interface EvaluacionInput {

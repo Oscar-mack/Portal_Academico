@@ -19,6 +19,7 @@ const NotesPage = lazy(() => import("./NotesPage"))
 const ProfilePage = lazy(() => import("./ProfilePage"))
 const ReportsPage = lazy(() => import("./ReportsPage"))
 const RoleDashboardHome = lazy(() => import("./RoleDashboardHome"))
+const StudentEvaluationsPage = lazy(() => import("./StudentEvaluationsPage"))
 const UsuariosPage = lazy(() => import("./admin/UsuariosPage"))
 const SchedulesPage = lazy(() => import("./SchedulesPage"))
 
@@ -227,6 +228,7 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
     navigation: [
       { label: "Inicio", icon: "home" },
       { label: "Mis cursos", icon: "courses", endpoint: "/api/asignaciones-curso" },
+      { label: "Evaluaciones", icon: "assignments", endpoint: "/api/evaluaciones" },
       { label: "Mis calificaciones", icon: "grades", endpoint: "/api/notas" },
       { label: "Mi horario", icon: "calendar", endpoint: "/api/horarios-catedratico" },
       { label: "Boleta académica", icon: "reports" },
@@ -755,6 +757,8 @@ export default function DashboardPage({
               <DocumentsPage user={user} />
             ) : user.rol === "alumno" && activeNav === "Mis cursos" ? (
               <AcademicAssignmentsPage user={user} />
+            ) : user.rol === "alumno" && activeNav === "Evaluaciones" ? (
+              <StudentEvaluationsPage />
             ) : user.rol === "alumno" && activeNav === "Mi horario" ? (
               <SchedulesPage user={user} />
             ) : user.rol === "alumno" &&

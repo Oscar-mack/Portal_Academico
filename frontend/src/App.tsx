@@ -65,10 +65,10 @@ function AcademicMark({ compact = false }: { compact?: boolean }) {
       </div>
       <div>
         <p className={`${compact ? "text-sm" : "text-base"} font-bold tracking-tight`}>
-          Portal Académico
+          GES
         </p>
-        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] opacity-60">
-          Campus digital
+        <p className="text-[0.68rem] font-semibold leading-tight opacity-75">
+          Galileo Educational Systema
         </p>
       </div>
     </div>

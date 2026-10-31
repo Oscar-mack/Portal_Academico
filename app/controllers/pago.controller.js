@@ -536,6 +536,7 @@ exports.anular = async (req, res) => {
 
     const cambios = { anuladoEn: new Date(), anuladoPorId: req.userId, motivoAnulacion: motivo };
     let reembolsoId = null;
+    let reembolsoEnCurso = false;
     if (pago.estado === "pendiente") {
       if (stripe) {
         try {
@@ -563,7 +564,11 @@ exports.anular = async (req, res) => {
             payment_intent: pago.stripePaymentIntentId,
             metadata: { pagoId: String(pago.id) }
           }, { idempotencyKey: `portal-reembolso-${pago.id}` });
+          if (["failed", "canceled"].includes(reembolso.status)) {
+            throw new Error(`Stripe devolvió el reembolso ${reembolso.id} con estado ${reembolso.status}`);
+          }
           reembolsoId = reembolso.id;
+          reembolsoEnCurso = ["pending", "requires_action"].includes(reembolso.status);
         } catch (stripeError) {
           console.error("Error al reembolsar en Stripe:", stripeError.message, "pagoId:", pago.id);
           await transaction.rollback();
@@ -578,8 +583,11 @@ exports.anular = async (req, res) => {
     return res.send({
       id: pago.id,
       estado: pago.estado,
-      reembolsado: Boolean(reembolsoId),
-      message: reembolsoId || pago.estado === "cancelado"
+      reembolsado: Boolean(reembolsoId) && !reembolsoEnCurso,
+      reembolsoEnCurso,
+      message: reembolsoEnCurso
+        ? "Pago anulado. Stripe aún está procesando el reembolso; verifica su resultado en Stripe."
+        : reembolsoId || pago.estado === "cancelado"
         ? "Pago anulado correctamente."
         : "Pago anulado contablemente. El dinero no se devolvió automáticamente; gestiona el reembolso en Stripe."
     });

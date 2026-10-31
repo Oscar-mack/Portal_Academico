@@ -26,6 +26,7 @@ let sessionCounter = 0;
 let sessionStatus = "open";
 let refundShouldFail = false;
 let sessionSuccessUrl = null;
+let refundStatus = null;
 
 function stripeMock() {
   return {
@@ -55,7 +56,7 @@ function stripeMock() {
       create: async input => {
         if (refundShouldFail) throw new Error("refund failed");
         stripeCalls.refunds.push(input);
-        return { id: `re_test_${stripeCalls.refunds.length}` };
+        return { id: `re_test_${stripeCalls.refunds.length}`, ...(refundStatus ? { status: refundStatus } : {}) };
       }
     },
     webhooks: Stripe.webhooks
@@ -595,4 +596,46 @@ test("webhook: los cuatro eventos, duplicados y pagos confirmados que no se libe
 
   const cargos = (await request(app).get("/api/cargos").set(auth(ctx.tokens.padre1))).body;
   assert.equal(cargos.find(c => c.id === cargo.id).montoPagado, 60);
+});
+
+test("reembolso: estados fallido/cancelado no anulan el pago; pendiente se informa como en curso", async () => {
+  const pagarCargo = async concepto => {
+    const cargo = (await crearCargo(ctx.tokens.admin, { concepto })).body;
+    sessionStatus = "open";
+    const checkout = await iniciarCheckout(ctx.tokens.padre1, { cargoId: cargo.id });
+    assert.equal((await pagarPorWebhook(checkout.body, cargo, 100)).status, 200);
+    return { cargo, pagoId: checkout.body.pagoId };
+  };
+  const anular = (pagoId, token = ctx.tokens.admin) => request(app).patch(`/api/pagos/${pagoId}/anular`)
+    .set(auth(token)).send({ motivo: "Devolución", reembolsar: true });
+
+  for (const estado of ["failed", "canceled"]) {
+    const { cargo, pagoId } = await pagarCargo(`Reembolso ${estado}`);
+    refundStatus = estado;
+    const respuesta = await anular(pagoId);
+    refundStatus = null;
+    assert.equal(respuesta.status, 502);
+    const pago = await db.pagos.findByPk(pagoId);
+    assert.equal(pago.estado, "pagado");
+    assert.equal(pago.stripeRefundId, null);
+    const cargoActual = (await request(app).get("/api/cargos").set(auth(ctx.tokens.admin))).body.find(c => c.id === cargo.id);
+    assert.equal(cargoActual.saldoPendiente, 0);
+  }
+
+  const pendiente = await pagarCargo("Reembolso pendiente");
+  refundStatus = "pending";
+  const enCurso = await anular(pendiente.pagoId);
+  refundStatus = null;
+  assert.equal(enCurso.status, 200);
+  assert.equal(enCurso.body.reembolsoEnCurso, true);
+  assert.equal(enCurso.body.reembolsado, false);
+  assert.equal((await db.pagos.findByPk(pendiente.pagoId)).estado, "anulado");
+
+  const completo = await pagarCargo("Reembolso completo");
+  refundStatus = "succeeded";
+  const ok = await anular(completo.pagoId);
+  refundStatus = null;
+  assert.equal(ok.body.reembolsado, true);
+  assert.equal(ok.body.reembolsoEnCurso, false);
+  assert.equal((await anular(completo.pagoId, ctx.tokens.padre1)).status, 403);
 });

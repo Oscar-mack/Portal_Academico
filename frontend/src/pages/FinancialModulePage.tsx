@@ -756,8 +756,12 @@ export default function FinancialModulePage({
                     )}
                     {canManage && (
                       <td className="px-6 py-4 text-right">
-                        {payment.estado === "pendiente" ||
-                        payment.estado === "pagado" ? (
+                        {payment.estado === "pagado" && payment.stripeRefundId ? (
+                          <span className="text-xs font-semibold text-amber-700">
+                            Reembolso en proceso
+                          </span>
+                        ) : payment.estado === "pendiente" ||
+                          payment.estado === "pagado" ? (
                           <button
                             className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-50"
                             onClick={() => {

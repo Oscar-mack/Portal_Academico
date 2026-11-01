@@ -44,7 +44,7 @@ debe aplicarse antes del despliegue (`/ready` responde `503` mientras falte).
 - HTTPS/TLS lo termina el proveedor; `FRONTEND_URL` y `CORS_ORIGIN` deben corresponder a dominios HTTPS. `APP_URL`, si está configurada, debe usar HTTPS.
 - Rollback: redeploy de la imagen/commit anterior. Antes de cambios de esquema, tomar backup.
 - Pendiente: el esquema se crea con `sequelize.sync()`; para producción formal conviene adoptar migraciones (sequelize-cli).
-- Stripe: registrar el endpoint `https://<APP_URL>/api/pagos/webhook` y los eventos `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `refund.created`, `refund.updated` y `refund.failed`. Los eventos de reembolso reconcilian el pago si Stripe completó el reembolso y la escritura local falló; el webhook debe devolver un error no-2xx ante fallos de base de datos para que Stripe reintente. Checkout devuelve al frontend en `FRONTEND_URL`; el estado solo se confirma mediante el webhook firmado y se consulta con `GET /api/pagos`.
+- Stripe: registrar el endpoint `https://<APP_URL>/api/pagos/webhook` y los eventos `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `refund.created`, `refund.updated`, `refund.failed`, `charge.refunded` y `charge.refund.updated`. Los eventos de reembolso reconcilian el pago si Stripe completó el reembolso y la escritura local falló; `charge.refunded` consulta los reembolsos en Stripe y solo concilia refunds completos. El webhook devuelve un error no-2xx ante fallos al consultar Stripe o la base de datos para que Stripe reintente. Checkout devuelve al frontend en `FRONTEND_URL`; el estado solo se confirma mediante el webhook firmado y se consulta con `GET /api/pagos`.
 
 ## Pagos con Stripe: verificación de despliegue
 - Variables a verificar (solo existencia y formato, nunca valores): `STRIPE_SECRET_KEY` (`sk_test_`/`sk_live_`), `STRIPE_WEBHOOK_SECRET` (`whsec_…` del endpoint registrado, distinto al de `stripe listen`), `FRONTEND_URL` (necesaria para Checkout; HTTPS, sin ruta) y `CORS_ORIGIN`. `APP_URL` es informativa y solo debe comprobarse si está configurada.
@@ -66,3 +66,21 @@ Cómo identificar qué corre en cada servicio sin adivinar:
 - Un error "No fue posible conectar" significa que no hubo respuesta HTTP (proceso reiniciando o arranque en frío con 502 sin cabeceras CORS, DNS/URL incorrecta o CORS). Si otras pantallas del mismo origen reciben 401/403/404 legibles, la URL y CORS son correctas y el fallo es puntual (502/503, timeout o proceso caído).
 
 Variables del backend en producción: `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, `FRONTEND_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `APP_URL` es informativa (ver arriba). `render.yaml` solo declara algunas; `FRONTEND_URL` y las `R2_*` deben existir en el panel de Render. Frontend: `VITE_API_URL`.
+
+## Pruebas de concurrencia de reembolsos
+La CI ejecuta `npm test` con SQLite; cinco pruebas de concurrencia de `test/reembolsos.test.js` se omiten porque SQLite no representa los locks de PostgreSQL. Para ejecutarlas, crea una base nueva y dedicada en un PostgreSQL instalado localmente, no mediante SSH, túnel, proxy, contenedor compartido ni proveedor remoto. Por ejemplo:
+
+```sh
+createdb -h 127.0.0.1 -p 5432 -U <usuario_local> portal_academico_discardable_concurrency
+```
+
+Configura `TEST_DATABASE_URL` con una URL a esa base, usando `127.0.0.1` o `::1`, puerto explícito y el usuario local. En la terminal local privada, reemplaza los marcadores por tus datos (codifica los caracteres reservados de la contraseña en la URL). Configura además la confirmación explícita indicada en el siguiente comando. No guardes ni compartas la URL con credenciales:
+
+```sh
+export TEST_DATABASE_URL='postgresql://<usuario_local>:<contraseña_URL_encoded>@127.0.0.1:5432/portal_academico_discardable_concurrency'
+export TEST_DATABASE_DISPOSABLE=I_CONFIRM_LOCAL_ISOLATED_DISPOSABLE_DATABASE_NO_TUNNEL
+node --test test/reembolsos.test.js
+unset TEST_DATABASE_URL TEST_DATABASE_DISPOSABLE
+```
+
+Antes de cualquier `DROP SCHEMA`, el fixture conecta y comprueba la identidad efectiva de base, usuario, puerto y direcciones loopback cliente/servidor, rechaza indicadores de SSH/servicios indirectos y exige que la base no tenga relaciones, funciones, tipos ni esquemas de usuario. Si falla una condición, no ejecuta operaciones destructivas. El fixture elimina y recrea `public`; por ello, para volver a ejecutar las pruebas, elimina y crea de nuevo la base descartable. No se admite `TEST_DATABASE_MIGRATED` ni la ruta de `TRUNCATE`. No apuntes a Neon, Production, una base compartida ni una base con datos que se deban conservar. No incluyas credenciales en archivos versionados o resultados.

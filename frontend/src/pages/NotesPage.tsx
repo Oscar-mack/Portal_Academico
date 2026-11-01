@@ -13,6 +13,10 @@ import { useAcademicPeriod } from "../context/AcademicPeriodContext"
 import type { AuthUser } from "../lib/api"
 import { downloadBlob } from "../lib/download"
 import { catalogsService } from "../services/catalogsService"
+import {
+  catedraticosService,
+  type Catedratico as TeacherRecord,
+} from "../services/catedraticosService"
 import { dashboardService } from "../services/dashboardService"
 import { evaluationsService } from "../services/evaluationsService"
 import { familyService } from "../services/familyService"
@@ -53,6 +57,8 @@ export default function NotesPage({ user }: { user: AuthUser }) {
   const [items, setItems] = useState<Nota[]>([])
   const [courses, setCourses] = useState<Curso[]>([])
   const [students, setStudents] = useState<Alumno[]>([])
+  const [teachers, setTeachers] = useState<TeacherRecord[]>([])
+  const [catalogWarning, setCatalogWarning] = useState("")
   const [query, setQuery] = useState("")
   const [courseFilter, setCourseFilter] = useState("")
   const [studentFilter, setStudentFilter] = useState("")
@@ -73,6 +79,7 @@ export default function NotesPage({ user }: { user: AuthUser }) {
   const load = useCallback(async () => {
     setLoading(true)
     setError("")
+    setCatalogWarning("")
     try {
       const noteRows = await notesService.list({
         periodoAcademicoId: selectedPeriodId ?? undefined,
@@ -84,12 +91,25 @@ export default function NotesPage({ user }: { user: AuthUser }) {
       setItems(safeRows)
 
       if (user.rol === "admin") {
-        const [courseRows, studentRows] = await Promise.all([
+        // Las notas ya se cargaron: un fallo en los catálogos de filtros no debe ocultarlas.
+        const [courseResult, studentResult, teacherResult] = await Promise.allSettled([
           catalogsService.listCourses(true),
           catalogsService.listStudents({ incluirInactivos: true }),
+          catedraticosService.list(),
         ])
-        setCourses(courseRows)
-        setStudents(studentRows)
+        setCourses(courseResult.status === "fulfilled" ? courseResult.value : [])
+        setStudents(studentResult.status === "fulfilled" ? studentResult.value : [])
+        setTeachers(teacherResult.status === "fulfilled" ? teacherResult.value : [])
+        const failed = [
+          courseResult.status === "rejected" ? "cursos" : "",
+          studentResult.status === "rejected" ? "estudiantes" : "",
+          teacherResult.status === "rejected" ? "catedráticos" : "",
+        ].filter(Boolean)
+        if (failed.length) {
+          setCatalogWarning(
+            `Las notas se cargaron, pero no fue posible consultar los filtros de ${failed.join(", ")}.`,
+          )
+        }
       } else {
         setCourses(
           Array.from(
@@ -133,6 +153,7 @@ export default function NotesPage({ user }: { user: AuthUser }) {
         setServerAverage(null)
       }
     } catch (requestError) {
+      setItems([])
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -284,11 +305,12 @@ export default function NotesPage({ user }: { user: AuthUser }) {
   const publishedCount = visibleItems.filter((note) => note.publicadaEn).length
   const pendingCount = visibleItems.length - publishedCount
   const visibleTeachers = Array.from(
-    new Map(
-      items
+    new Map<number, { id: number; nombre: string; apellido: string }>([
+      ...teachers.map((teacher) => [teacher.id, teacher] as const),
+      ...items
         .filter((note) => note.catedratico)
-        .map((note) => [note.catedraticoId, note.catedratico!]),
-    ).values(),
+        .map((note) => [note.catedraticoId, note.catedratico!] as const),
+    ]).values(),
   )
 
   return (
@@ -396,6 +418,11 @@ export default function NotesPage({ user }: { user: AuthUser }) {
           )}
         </FilterBar>
         {notice && <Notice message={notice} onClose={() => setNotice("")} />}
+        {catalogWarning && (
+          <p className="mx-5 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:mx-6">
+            {catalogWarning}
+          </p>
+        )}
         {error && !historyNote && !detail && (
           <div className="mx-5 mt-5 sm:mx-6">
             <ErrorState message={error} onRetry={load} />
@@ -403,7 +430,7 @@ export default function NotesPage({ user }: { user: AuthUser }) {
         )}
         {loading ? (
           <LoadingState rows={5} />
-        ) : visibleItems.length ? (
+        ) : error && !items.length ? null : visibleItems.length ? (
           <DataTable minWidth="min-w-[72rem]">
             <thead>
               <tr className="border-b border-line bg-canvas/45 text-[0.68rem] font-bold uppercase tracking-wider text-muted">

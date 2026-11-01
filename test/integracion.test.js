@@ -1298,6 +1298,34 @@ test("los logs no contienen contraseñas ni tokens", async () => {
   assert.ok(!salida.includes(ctx.tokens.alumno1));
 });
 
+test("matriz de rutas académicas y financieras: registradas (nunca 404 de ruta) y con permisos por rol", async () => {
+  const rutas = [
+    ["/api/ofertas-curso", { admin: 200, cat1: 403, alumno1: 403, padre1: 403 }],
+    // Sin periodoAcademicoId el alumno recibe 400 de validación: la ruta existe y lo autoriza.
+    ["/api/ofertas-curso/disponibles", { admin: 403, cat1: 403, alumno1: 400, padre1: 403 }],
+    ["/api/evaluaciones", { admin: 200, cat1: 200, alumno1: 200, padre1: 403 }],
+    ["/api/notas", { admin: 200, cat1: 200, alumno1: 200, padre1: 200 }],
+    ["/api/tareas", { admin: 200, cat1: 200, alumno1: 200, padre1: 403 }],
+    ["/api/materiales", { admin: 200, cat1: 200, alumno1: 200, padre1: 403 }],
+    ["/api/horarios-catedratico", { admin: 200, cat1: 200, alumno1: 200, padre1: 200 }],
+    ["/api/asignaciones-curso", { admin: 200, cat1: 200, alumno1: 200, padre1: 200 }],
+    ["/api/cargos", { admin: 200, cat1: 403, alumno1: 200, padre1: 200 }],
+    ["/api/pagos", { admin: 200, cat1: 403, alumno1: 200, padre1: 200 }],
+    ["/api/archivos-academicos/999999/descarga", { admin: 404, cat1: 404, alumno1: 404, padre1: 403 }]
+  ];
+  for (const [ruta, esperado] of rutas) {
+    const sinToken = await request(app).get(ruta);
+    assert.equal(sinToken.status, 403, `${ruta} sin token`);
+    assert.match(sinToken.body.message, /token/i);
+    const tokenInvalido = await request(app).get(ruta).set(auth("invalido"));
+    assert.equal(tokenInvalido.status, 401, `${ruta} con token inválido`);
+    for (const [usuario, estado] of Object.entries(esperado)) {
+      const res = await request(app).get(ruta).set(auth(ctx.tokens[usuario]));
+      assert.equal(res.status, estado, `${ruta} como ${usuario}: ${res.body.message || ""}`);
+    }
+  }
+});
+
 test("readiness rechaza un esquema incompleto", async () => {
   await db.sequelize.getQueryInterface().dropTable("eventos_stripe");
   const ready = await request(app).get("/ready");

@@ -82,3 +82,24 @@ test("el guard rechaza una sesión SSH o un indicador de túnel", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /no admiten sesiones SSH/);
 });
+
+test("esLoopback acepta solo direcciones loopback sin máscara", () => {
+  const accepted = ["127.0.0.1", "127.1.2.3", "::1", "::ffff:127.0.0.1"];
+  const rejected = ["127.0.0.1/32", "::1/128", "10.0.0.5", "192.168.1.10", "172.17.0.1",
+    "8.8.8.8", "::2", "fe80::1", "127.0.0.1.evil", "localhost", "", "  ", null, 127, {}];
+  const result = spawnSync(process.execPath, [
+    "-e",
+    `const { esLoopback } = require('./app/models');
+     const input = ${JSON.stringify({ accepted, rejected })};
+     process.stdout.write(JSON.stringify({
+       accepted: input.accepted.map(esLoopback),
+       rejected: input.rejected.map(esLoopback),
+       undef: esLoopback(undefined)
+     }));`
+  ], { cwd: projectRoot, encoding: "utf8", env: { ...process.env, NODE_ENV: "test", TEST_DATABASE_URL: "", TEST_DATABASE_DISPOSABLE: "" } });
+  assert.equal(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.ok(out.accepted.every(v => v === true), "todas las direcciones loopback deben aceptarse");
+  assert.ok(out.rejected.every(v => v === false), "ninguna dirección no loopback o inválida debe aceptarse");
+  assert.equal(out.undef, false);
+});

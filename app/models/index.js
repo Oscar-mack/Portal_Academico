@@ -81,10 +81,18 @@ if (process.env.NODE_ENV === "test" && process.env.TEST_DATABASE_URL) {
 	);
 }
 
+// Recibe la dirección sin máscara (host(inet)); una entrada CIDR se rechaza.
+const esLoopback = address => {
+	if (typeof address !== "string") return false;
+	const normalized = address.replace(/^::ffff:/i, "");
+	return normalized === "::1" || (net.isIP(normalized) === 4 && normalized.startsWith("127."));
+};
+
 const db = {};
 
 db.Sequelize = Sequelize;
 db.sequelize = sequelize;
+db.esLoopback = esLoopback;
 db.verifyDisposablePostgresTestDatabase = async () => {
 	if (!disposableTestDatabase) {
 		throw new Error("No hay una base PostgreSQL descartable configurada para pruebas.");
@@ -95,9 +103,9 @@ db.verifyDisposablePostgresTestDatabase = async () => {
 		SELECT
 			current_database() AS database_name,
 			current_user AS user_name,
-			inet_server_addr()::text AS server_address,
+			host(inet_server_addr()) AS server_address,
 			inet_server_port() AS server_port,
-			inet_client_addr()::text AS client_address,
+			host(inet_client_addr()) AS client_address,
 			(SELECT count(*) FROM pg_class c
 			 JOIN pg_namespace n ON n.oid = c.relnamespace
 			 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')) AS public_relations,
@@ -112,11 +120,6 @@ db.verifyDisposablePostgresTestDatabase = async () => {
 			 AND nspname NOT LIKE 'pg_toast%') AS other_schemas
 	`, { type: QueryTypes.SELECT });
 
-	const esLoopback = address => {
-		if (!address) return false;
-		const normalized = address.replace(/^::ffff:/i, "");
-		return normalized === "::1" || (net.isIP(normalized) === 4 && normalized.startsWith("127."));
-	};
 	if (identity.database_name !== disposableTestDatabase.databaseName ||
 		identity.user_name !== disposableTestDatabase.username ||
 		identity.server_port !== disposableTestDatabase.port ||

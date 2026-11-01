@@ -112,21 +112,25 @@ async function listarReembolsos(stripe, filtros) {
 
 async function metadataAnulacion(refund, pago, transaction) {
   const metadata = refund.metadata || {};
-  const metadataUsuarioId = Number(metadata.anuladoPorId);
-  const fallbackUsuarioId = Number(pago.anuladoPorId);
-  const usuarioId = Number.isSafeInteger(metadataUsuarioId) && metadataUsuarioId > 0
-    ? metadataUsuarioId
-    : fallbackUsuarioId;
-  const usuario = Number.isSafeInteger(usuarioId) && usuarioId > 0
-    ? await db.usuarios.findByPk(usuarioId, { transaction })
-    : null;
+  const idAutorizado = async value => {
+    const userId = typeof value === "number"
+      ? value
+      : typeof value === "string" && /^[1-9]\d*$/.test(value)
+        ? Number(value)
+        : NaN;
+    if (!Number.isSafeInteger(userId) || userId <= 0) return null;
+    const usuario = await db.usuarios.findByPk(userId, { transaction });
+    return usuario?.rol === ROLES.ADMIN ? usuario.id : null;
+  };
+  const usuarioId = await idAutorizado(metadata.anuladoPorId) ||
+    await idAutorizado(pago.anuladoPorId);
   const metadataMotivo = typeof metadata.motivo === "string" ? metadata.motivo.trim() : "";
   const motivoExistente = typeof pago.motivoAnulacion === "string" ? pago.motivoAnulacion.trim() : "";
 
   return {
     estado: "anulado",
     anuladoEn: new Date(),
-    anuladoPorId: usuario?.id ?? null,
+    anuladoPorId: usuarioId,
     motivoAnulacion: metadataMotivo.length >= 5
       ? metadataMotivo
       : motivoExistente.length >= 5
@@ -443,7 +447,7 @@ exports.webhook = async (req, res) => {
       console.error("Configuración de Stripe incompleta para el webhook:", err.message);
       return res.status(503).send({ message: "El procesamiento de pagos no está configurado temporalmente." });
     }
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send({ message: "Webhook Error: firma inválida." });
   }
 
   const tiposRelevantes = new Set([

@@ -5,8 +5,8 @@ process.env.STRIPE_WEBHOOK_SECRET = "whsec_test_secret";
 process.env.FRONTEND_URL = "https://portal.test";
 
 // Stripe se simula; no se prueba la comunicación real con Stripe.
-// Las pruebas PostgreSQL pueden borrar el esquema o truncar tablas, por lo que TEST_DATABASE_URL
-// debe apuntar exclusivamente a una base local descartable cuyo nombre incluya test/testing/discardable.
+// Las pruebas PostgreSQL eliminan el esquema public; la conexión exige confirmación explícita,
+// destino loopback validado y una base recién creada sin objetos de usuario.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
@@ -18,7 +18,7 @@ const app = require("../app");
 const pagoController = require("../app/controllers/pago.controller.js");
 
 const esPostgres = Boolean(process.env.TEST_DATABASE_URL);
-const soloPostgres = esPostgres ? {} : { skip: "requiere TEST_DATABASE_URL (PostgreSQL local)" };
+const soloPostgres = esPostgres ? {} : { skip: "requiere PostgreSQL local descartable y confirmación explícita" };
 const PASSWORD = "ClaveSegura123";
 const ctx = { tokens: {} };
 const auth = token => ({ Authorization: `Bearer ${token}` });
@@ -138,11 +138,8 @@ const eventosDe = id => db.eventosStripe.findAll({ where: { stripeEventId: id } 
 test.before(async () => {
   console.log = () => {};
   console.error = (...args) => { errores.push(args.join(" ")); };
-  if (esPostgres && process.env.TEST_DATABASE_MIGRATED) {
-    await db.sequelize.query(
-      "TRUNCATE usuarios, alumnos, padre_alumnos, pagos, cargos, eventos_stripe, grado_carreras RESTART IDENTITY CASCADE"
-    );
-  } else if (esPostgres) {
+  if (esPostgres) {
+    await db.verifyDisposablePostgresTestDatabase();
     await db.sequelize.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
     await db.sequelize.sync({ force: true });
   } else {
@@ -160,6 +157,7 @@ test.before(async () => {
   });
   await db.padresAlumnos.create({ usuarioId: upadre.id, alumnoId: alumno.id });
   ctx.alumno = alumno.id;
+  ctx.alumnoUserId = ualumno.id;
   ctx.adminId = admin.id;
   for (const [clave, username] of [["admin", "admin"], ["padre", "padre1"]]) {
     const res = await request(app).post("/api/auth/signin").send({ username, password: PASSWORD });
@@ -355,6 +353,22 @@ test("charge.refunded con error al consultar Stripe devuelve 500 y no registra e
   assert.equal(res.status, 500);
   assert.equal((await eventosDe("evt_ch_fail")).length, 0, "Stripe lo reintentará");
   assert.equal((await cargar(p.pagoId)).estado, "pagado");
+});
+
+test("la metadata solo atribuye anulaciones a usuarios con rol administrador", async () => {
+  const p = await pagoPagado();
+  const refund = refundObj(p, {
+    metadata: {
+      pagoId: String(p.pagoId),
+      anuladoPorId: String(ctx.alumnoUserId),
+      motivo: "Solicitud externa"
+    }
+  });
+  assert.equal((await hook("refund.updated", refund)).status, 200);
+  const pago = await cargar(p.pagoId);
+  assert.equal(pago.estado, "anulado");
+  assert.equal(pago.anuladoPorId, null);
+  assert.equal(pago.motivoAnulacion, "Solicitud externa");
 });
 
 test("evento sin pago local relacionado: se registra para revisión y no modifica otros pagos", async () => {

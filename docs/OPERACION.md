@@ -68,4 +68,19 @@ Cómo identificar qué corre en cada servicio sin adivinar:
 Variables del backend en producción: `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, `FRONTEND_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `APP_URL` es informativa (ver arriba). `render.yaml` solo declara algunas; `FRONTEND_URL` y las `R2_*` deben existir en el panel de Render. Frontend: `VITE_API_URL`.
 
 ## Pruebas de concurrencia de reembolsos
-La CI ejecuta `npm test` con SQLite; cinco pruebas de concurrencia de `test/reembolsos.test.js` se omiten porque SQLite no representa los locks de PostgreSQL. Para ejecutarlas, usar únicamente una base PostgreSQL local y descartable cuyo nombre incluya `test`, `testing` o `discardable`, con `TEST_DATABASE_URL` configurada localmente. Ejecutar solo `node --test test/reembolsos.test.js`: sin `TEST_DATABASE_MIGRATED=1`, el fixture elimina y recrea el esquema `public`; con esa variable en `1`, trunca las tablas de prueba. Nunca apuntar a Neon, Production, una base compartida ni una base con datos que se deban conservar. Estas cinco pruebas quedan pendientes hasta disponer de esa base descartable.
+La CI ejecuta `npm test` con SQLite; cinco pruebas de concurrencia de `test/reembolsos.test.js` se omiten porque SQLite no representa los locks de PostgreSQL. Para ejecutarlas, crea una base nueva y dedicada en un PostgreSQL instalado localmente, no mediante SSH, túnel, proxy, contenedor compartido ni proveedor remoto. Por ejemplo:
+
+```sh
+createdb -h 127.0.0.1 -p 5432 -U <usuario_local> portal_academico_discardable_concurrency
+```
+
+Configura `TEST_DATABASE_URL` con una URL a esa base, usando `127.0.0.1` o `::1`, puerto explícito y el usuario local. En la terminal local privada, reemplaza los marcadores por tus datos (codifica los caracteres reservados de la contraseña en la URL). Configura además la confirmación explícita indicada en el siguiente comando. No guardes ni compartas la URL con credenciales:
+
+```sh
+export TEST_DATABASE_URL='postgresql://<usuario_local>:<contraseña_URL_encoded>@127.0.0.1:5432/portal_academico_discardable_concurrency'
+export TEST_DATABASE_DISPOSABLE=I_CONFIRM_LOCAL_ISOLATED_DISPOSABLE_DATABASE_NO_TUNNEL
+node --test test/reembolsos.test.js
+unset TEST_DATABASE_URL TEST_DATABASE_DISPOSABLE
+```
+
+Antes de cualquier `DROP SCHEMA`, el fixture conecta y comprueba la identidad efectiva de base, usuario, puerto y direcciones loopback cliente/servidor, rechaza indicadores de SSH/servicios indirectos y exige que la base no tenga relaciones, funciones, tipos ni esquemas de usuario. Si falla una condición, no ejecuta operaciones destructivas. El fixture elimina y recrea `public`; por ello, para volver a ejecutar las pruebas, elimina y crea de nuevo la base descartable. No se admite `TEST_DATABASE_MIGRATED` ni la ruta de `TRUNCATE`. No apuntes a Neon, Production, una base compartida ni una base con datos que se deban conservar. No incluyas credenciales en archivos versionados o resultados.

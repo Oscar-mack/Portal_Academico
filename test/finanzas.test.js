@@ -353,6 +353,7 @@ test("el webhook distingue configuración ausente de firma inválida para permit
     const firma = await request(app).post("/api/pagos/webhook")
       .set("Content-Type", "application/json").set("Stripe-Signature", "t=1,v1=invalida").send(body);
     assert.equal(firma.status, 400);
+    assert.deepEqual(firma.body, { message: "Webhook Error: firma inválida." });
   } finally {
     process.env.STRIPE_WEBHOOK_SECRET = secret;
   }

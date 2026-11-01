@@ -918,7 +918,19 @@ paths:
                 reembolsar: { type: boolean }
       responses:
         "200": { description: Pago cancelado o anulado }
-        "202": { description: Reembolso solicitado, pendiente de confirmación de Stripe }
+        "202":
+          description: Reembolso en proceso; el pago continúa pagado hasta la confirmación de Stripe
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, estado, reembolsado, reembolsoEnCurso, message]
+                properties:
+                  id: { type: integer }
+                  estado: { type: string, enum: [pagado] }
+                  reembolsado: { type: boolean, enum: [false] }
+                  reembolsoEnCurso: { type: boolean, enum: [true] }
+                  message: { type: string }
         "400": { description: Motivo ausente o reembolso no aplicable }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Pago no encontrado }
@@ -956,6 +968,13 @@ paths:
               example: { received: true }
         "400":
           description: Firma inválida
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message: { type: string, example: "Webhook Error: firma inválida." }
         "503":
           description: Configuración de Stripe incompleta; Stripe puede reintentar
         "500":

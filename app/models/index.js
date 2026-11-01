@@ -1,5 +1,6 @@
 const dbConfig = require("../config/db.config.js");
-const { Sequelize } = require("sequelize");
+const { Sequelize, QueryTypes } = require("sequelize");
+const net = require("node:net");
 
 const sequelizeOptions = {
 	dialect: dbConfig.dialect,
@@ -15,20 +16,51 @@ const hasIndividualDatabaseConfiguration = [
 ].every(Boolean);
 
 let sequelize;
+let disposableTestDatabase;
 
 if (process.env.NODE_ENV === "test" && process.env.TEST_DATABASE_URL) {
-	// Estas pruebas pueden borrar el esquema: exigen una base local desechable identificada como test.
-	const testDatabaseUrl = new URL(process.env.TEST_DATABASE_URL);
-	const host = testDatabaseUrl.hostname;
-	if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
-		throw new Error("TEST_DATABASE_URL solo puede apuntar a un PostgreSQL local.");
+	if (process.env.TEST_DATABASE_DISPOSABLE !== "I_CONFIRM_LOCAL_ISOLATED_DISPOSABLE_DATABASE_NO_TUNNEL") {
+		throw new Error("Las pruebas PostgreSQL destructivas requieren TEST_DATABASE_DISPOSABLE=I_CONFIRM_LOCAL_ISOLATED_DISPOSABLE_DATABASE_NO_TUNNEL.");
 	}
+	if (["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"]
+		.some(key => process.env[key])) {
+		throw new Error("Las pruebas PostgreSQL destructivas no admiten sesiones SSH, túneles ni servicios PostgreSQL indirectos.");
+	}
+
+	let testDatabaseUrl;
+	try {
+		testDatabaseUrl = new URL(process.env.TEST_DATABASE_URL);
+	} catch {
+		throw new Error("TEST_DATABASE_URL debe ser una URL PostgreSQL local válida.");
+	}
+	if (!["postgres:", "postgresql:"].includes(testDatabaseUrl.protocol) ||
+		testDatabaseUrl.search || testDatabaseUrl.hash) {
+		throw new Error("TEST_DATABASE_URL debe usar el protocolo PostgreSQL.");
+	}
+	const host = testDatabaseUrl.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	const hostIsLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
 	const databaseName = decodeURIComponent(testDatabaseUrl.pathname.replace(/^\/+/, ""));
-	if (!/(^|[-_])(test|testing|discardable)([-_]|$)/i.test(databaseName)) {
-		throw new Error("TEST_DATABASE_URL debe apuntar a una base local descartable cuyo nombre incluya test, testing o discardable.");
+	const port = Number(testDatabaseUrl.port);
+	if (!hostIsLoopback || !testDatabaseUrl.port || !Number.isInteger(port) || port < 1 || port > 65535) {
+		throw new Error("TEST_DATABASE_URL debe usar un host loopback y un puerto local explícito.");
 	}
-	sequelize = new Sequelize(process.env.TEST_DATABASE_URL, { dialect: "postgres", logging: false, pool: { max: 20 } });
+	if (!/^portal_academico_discardable_[a-z0-9][a-z0-9_-]{0,40}$/i.test(databaseName)) {
+		throw new Error("La base PostgreSQL de pruebas debe llamarse portal_academico_discardable_<identificador>.");
+	}
+	if (!testDatabaseUrl.username) {
+		throw new Error("TEST_DATABASE_URL debe identificar el usuario local de PostgreSQL.");
+	}
+	disposableTestDatabase = {
+		host,
+		port,
+		databaseName,
+		username: decodeURIComponent(testDatabaseUrl.username)
+	};
+	sequelize = new Sequelize(testDatabaseUrl.toString(), { dialect: "postgres", logging: false, pool: { max: 20 } });
 } else if (process.env.NODE_ENV === "test") {
+	if (process.env.TEST_DATABASE_DISPOSABLE) {
+		throw new Error("TEST_DATABASE_DISPOSABLE requiere TEST_DATABASE_URL.");
+	}
 	// Las pruebas de integración usan una base SQLite en memoria.
 	sequelize = new Sequelize("sqlite::memory:", { logging: false });
 } else if (dbConfig.DATABASE_URL) {
@@ -53,6 +85,52 @@ const db = {};
 
 db.Sequelize = Sequelize;
 db.sequelize = sequelize;
+db.verifyDisposablePostgresTestDatabase = async () => {
+	if (!disposableTestDatabase) {
+		throw new Error("No hay una base PostgreSQL descartable configurada para pruebas.");
+	}
+
+	await sequelize.authenticate();
+	const [identity] = await sequelize.query(`
+		SELECT
+			current_database() AS database_name,
+			current_user AS user_name,
+			inet_server_addr()::text AS server_address,
+			inet_server_port() AS server_port,
+			inet_client_addr()::text AS client_address,
+			(SELECT count(*) FROM pg_class c
+			 JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')) AS public_relations,
+			(SELECT count(*) FROM pg_proc p
+			 JOIN pg_namespace n ON n.oid = p.pronamespace
+			 WHERE n.nspname = 'public') AS public_functions,
+			(SELECT count(*) FROM pg_type t
+			 JOIN pg_namespace n ON n.oid = t.typnamespace
+			 WHERE n.nspname = 'public') AS public_types,
+			(SELECT count(*) FROM pg_namespace
+			 WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'public')
+			 AND nspname NOT LIKE 'pg_toast%') AS other_schemas
+	`, { type: QueryTypes.SELECT });
+
+	const esLoopback = address => {
+		if (!address) return false;
+		const normalized = address.replace(/^::ffff:/i, "");
+		return normalized === "::1" || (net.isIP(normalized) === 4 && normalized.startsWith("127."));
+	};
+	if (identity.database_name !== disposableTestDatabase.databaseName ||
+		identity.user_name !== disposableTestDatabase.username ||
+		identity.server_port !== disposableTestDatabase.port ||
+		!esLoopback(identity.server_address) ||
+		!esLoopback(identity.client_address)) {
+		throw new Error("La conexión efectiva no coincide con la base PostgreSQL local descartable configurada.");
+	}
+	if (Number(identity.public_relations) !== 0 ||
+		Number(identity.public_functions) !== 0 ||
+		Number(identity.public_types) !== 0 ||
+		Number(identity.other_schemas) !== 0) {
+		throw new Error("La base de pruebas no está recién creada o contiene objetos de usuario; no se ejecutará ninguna operación destructiva.");
+	}
+};
 db.usuarios = require("./usuario.model.js")(sequelize, Sequelize);
 db.catedraticos = require("./catedratico.model.js")(sequelize, Sequelize);
 db.alumnos = require("./alumno.model.js")(sequelize, Sequelize);

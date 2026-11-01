@@ -28,6 +28,7 @@ let sessionRetrieveShouldFail = false;
 let refundShouldFail = false;
 let sessionSuccessUrl = null;
 let refundStatus = "succeeded";
+const refundStore = [];
 
 function stripeMock() {
   return {
@@ -55,18 +56,27 @@ function stripeMock() {
       }
     },
     refunds: {
-      create: async input => {
+      create: async (input, options = {}) => {
         if (refundShouldFail) throw new Error("refund failed");
+        const previo = options.idempotencyKey && refundStore.find(item => item.key === options.idempotencyKey);
+        if (previo) return previo.refund;
         stripeCalls.refunds.push(input);
-        return {
+        const refund = {
           id: `re_test_${stripeCalls.refunds.length}`,
           status: refundStatus,
-          amount: 10000,
+          amount: input.amount,
           currency: "usd",
           payment_intent: input.payment_intent,
           metadata: input.metadata
         };
+        refundStore.push({ key: options.idempotencyKey, refund });
+        return refund;
       },
+      list: async params => ({
+        data: refundStore.map(item => item.refund)
+          .filter(refund => refund.payment_intent === params.payment_intent),
+        has_more: false
+      }),
       retrieve: async id => ({
         id,
         status: refundStatus,
@@ -828,10 +838,15 @@ test("refund.failed limpia el reembolso pendiente y el pago sigue pagado", async
   await pago.reload();
   const refundId = pago.stripeRefundId;
   assert.ok(refundId);
+  assert.ok(await db.usuarios.findByPk(pago.anuladoPorId));
+  assert.equal(pago.motivoAnulacion, "Prueba");
   assert.equal((await enviarWebhook("refund.failed", refundEvt(pago, { id: refundId, status: "failed" }))).status, 200);
   await pago.reload();
   assert.equal(pago.estado, "pagado");
   assert.equal(pago.stripeRefundId, null);
+  assert.equal(pago.anuladoEn, null);
+  assert.equal(pago.anuladoPorId, null);
+  assert.equal(pago.motivoAnulacion, null);
 });
 
 test("webhook de reembolso: fallo de BD devuelve 500 sin registrar el evento y el reintento concilia", async () => {

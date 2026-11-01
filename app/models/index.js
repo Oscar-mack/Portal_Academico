@@ -16,7 +16,19 @@ const hasIndividualDatabaseConfiguration = [
 
 let sequelize;
 
-if (process.env.NODE_ENV === "test") {
+if (process.env.NODE_ENV === "test" && process.env.TEST_DATABASE_URL) {
+	// Estas pruebas pueden borrar el esquema: exigen una base local desechable identificada como test.
+	const testDatabaseUrl = new URL(process.env.TEST_DATABASE_URL);
+	const host = testDatabaseUrl.hostname;
+	if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
+		throw new Error("TEST_DATABASE_URL solo puede apuntar a un PostgreSQL local.");
+	}
+	const databaseName = decodeURIComponent(testDatabaseUrl.pathname.replace(/^\/+/, ""));
+	if (!/(^|[-_])(test|testing|discardable)([-_]|$)/i.test(databaseName)) {
+		throw new Error("TEST_DATABASE_URL debe apuntar a una base local descartable cuyo nombre incluya test, testing o discardable.");
+	}
+	sequelize = new Sequelize(process.env.TEST_DATABASE_URL, { dialect: "postgres", logging: false, pool: { max: 20 } });
+} else if (process.env.NODE_ENV === "test") {
 	// Las pruebas de integración usan una base SQLite en memoria.
 	sequelize = new Sequelize("sqlite::memory:", { logging: false });
 } else if (dbConfig.DATABASE_URL) {

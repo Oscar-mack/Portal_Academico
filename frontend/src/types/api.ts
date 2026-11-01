@@ -238,6 +238,7 @@ export interface Pago {
   createdAt: string
   anuladoEn?: string | null
   motivoAnulacion?: string | null
+  stripeRefundId?: string | null
   alumno?: Alumno
 }
 

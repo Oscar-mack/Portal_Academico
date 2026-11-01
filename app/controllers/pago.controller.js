@@ -73,6 +73,132 @@ const TRANSICIONES_VALIDAS = {
 
 const aCentavos = valor => Math.round(Number(valor) * 100);
 const desdeCentavos = valor => Number((valor / 100).toFixed(2));
+const ESTADOS_REEMBOLSO_FALLIDO = new Set(["failed", "canceled"]);
+const idPaymentIntent = valor => typeof valor === "string" ? valor : valor?.id || null;
+
+function reembolsoCoincide(pago, refund) {
+  return Boolean(pago.stripePaymentIntentId) &&
+    idPaymentIntent(refund.payment_intent) === pago.stripePaymentIntentId &&
+    Number.isSafeInteger(Number(refund.amount)) &&
+    Number(refund.amount) === aCentavos(pago.monto) &&
+    typeof refund.currency === "string" &&
+    refund.currency.toLowerCase() === String(pago.moneda).toLowerCase();
+}
+
+async function listarReembolsos(stripe, filtros) {
+  const refunds = [];
+  const cursores = new Set();
+  let startingAfter;
+
+  do {
+    const page = await stripe.refunds.list({
+      ...filtros,
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {})
+    });
+    refunds.push(...page.data);
+    if (!page.has_more) break;
+
+    const lastId = page.data.at(-1)?.id;
+    if (!lastId || cursores.has(lastId)) {
+      throw new Error("Stripe devolvió una página de reembolsos sin cursor válido.");
+    }
+    cursores.add(lastId);
+    startingAfter = lastId;
+  } while (true);
+
+  return refunds;
+}
+
+async function metadataAnulacion(refund, pago, transaction) {
+  const metadata = refund.metadata || {};
+  const metadataUsuarioId = Number(metadata.anuladoPorId);
+  const fallbackUsuarioId = Number(pago.anuladoPorId);
+  const usuarioId = Number.isSafeInteger(metadataUsuarioId) && metadataUsuarioId > 0
+    ? metadataUsuarioId
+    : fallbackUsuarioId;
+  const usuario = Number.isSafeInteger(usuarioId) && usuarioId > 0
+    ? await db.usuarios.findByPk(usuarioId, { transaction })
+    : null;
+  const metadataMotivo = typeof metadata.motivo === "string" ? metadata.motivo.trim() : "";
+  const motivoExistente = typeof pago.motivoAnulacion === "string" ? pago.motivoAnulacion.trim() : "";
+
+  return {
+    estado: "anulado",
+    anuladoEn: new Date(),
+    anuladoPorId: usuario?.id ?? null,
+    motivoAnulacion: metadataMotivo.length >= 5
+      ? metadataMotivo
+      : motivoExistente.length >= 5
+        ? motivoExistente
+        : `Reembolso confirmado por Stripe${refund.id ? ` (${refund.id})` : ""}`,
+    ...(refund.id ? { stripeRefundId: refund.id } : {})
+  };
+}
+
+async function conciliarReembolso({ eventId, refund, transaction }) {
+  const paymentIntentId = idPaymentIntent(refund.payment_intent);
+  if (!paymentIntentId) {
+    console.error("Webhook: reembolso sin PaymentIntent; requiere revisión", { eventId, refundId: refund.id });
+    return null;
+  }
+
+  const snapshot = await Pago.findOne({
+    where: { stripePaymentIntentId: paymentIntentId },
+    transaction
+  });
+  if (!snapshot) {
+    console.error("Webhook: reembolso sin pago local relacionado; requiere revisión", {
+      eventId, refundId: refund.id, paymentIntentId
+    });
+    return null;
+  }
+  if (snapshot.cargoId) {
+    await Cargo.findByPk(snapshot.cargoId, { transaction, lock: transaction.LOCK.UPDATE });
+  }
+  const pago = await Pago.findByPk(snapshot.id, { transaction, lock: transaction.LOCK.UPDATE });
+  if (!pago) return null;
+
+  const metadataPagoId = refund.metadata?.pagoId;
+  if (metadataPagoId !== undefined && String(metadataPagoId) !== String(pago.id)) {
+    console.error("Webhook: el pagoId del reembolso no coincide con el PaymentIntent; requiere revisión", {
+      eventId, refundId: refund.id, pagoId: pago.id
+    });
+    return null;
+  }
+  if (!reembolsoCoincide(pago, refund)) {
+    console.error("Webhook: importe, moneda o PaymentIntent del reembolso no coinciden; requiere revisión", {
+      eventId, refundId: refund.id, pagoId: pago.id
+    });
+    return pago;
+  }
+
+  if (refund.status === "succeeded") {
+    if (pago.estado === "pagado") {
+      await pago.update(await metadataAnulacion(refund, pago, transaction), { transaction });
+    } else if (pago.estado === "anulado" && !pago.stripeRefundId && refund.id) {
+      await pago.update({ stripeRefundId: refund.id }, { transaction });
+    } else if (pago.estado !== "anulado") {
+      console.error("Webhook: reembolso exitoso para un pago que no está pagado; requiere revisión", {
+        eventId, refundId: refund.id, pagoId: pago.id, estado: pago.estado
+      });
+    }
+  } else if (ESTADOS_REEMBOLSO_FALLIDO.has(refund.status) &&
+      pago.estado === "pagado" && pago.stripeRefundId === refund.id) {
+    await pago.update({
+      stripeRefundId: null,
+      anuladoEn: null,
+      anuladoPorId: null,
+      motivoAnulacion: null
+    }, { transaction });
+  } else if (ESTADOS_REEMBOLSO_FALLIDO.has(refund.status) &&
+      pago.estado === "anulado" && pago.stripeRefundId === refund.id) {
+    console.error("Webhook: reembolso ya aplicado aparece fallido; requiere conciliación manual", {
+      eventId, refundId: refund.id, pagoId: pago.id
+    });
+  }
+  return pago;
+}
 
 // Intenta expirar una sesión abierta. Devuelve "expired", "complete" (el webhook confirmará el cobro)
 // o "error" si Stripe no respondió y no se pudo comprobar el estado.
@@ -307,9 +433,10 @@ exports.crearSesion = async (req, res) => {
 exports.webhook = async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
+  let stripe;
 
   try {
-    const stripe = getStripe();
+    stripe = getStripe();
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     if (err.code === PROVIDER_UNAVAILABLE) {
@@ -323,11 +450,40 @@ exports.webhook = async (req, res) => {
     "checkout.session.completed",
     "checkout.session.expired",
     "checkout.session.async_payment_succeeded",
-    "checkout.session.async_payment_failed",
+    "checkout.session.async_payment_failed"
+  ]);
+  const tiposReembolso = new Set([
     "refund.created",
     "refund.updated",
-    "refund.failed"
+    "refund.failed",
+    "charge.refund.updated",
+    "charge.refunded"
   ]);
+  const esEventoReembolso = tiposReembolso.has(event.type);
+  let refundsDelCharge = [];
+
+  if (event.type === "charge.refunded") {
+    const charge = event.data?.object;
+    const paymentIntentId = idPaymentIntent(charge?.payment_intent);
+    const filtros = paymentIntentId
+      ? { payment_intent: paymentIntentId }
+      : charge?.id
+        ? { charge: charge.id }
+        : null;
+    if (!filtros) {
+      console.error("Webhook: charge.refunded sin identificador de cobro; requiere revisión", {
+        eventId: event.id
+      });
+    } else {
+      try {
+        refundsDelCharge = await listarReembolsos(stripe, filtros);
+      } catch (error) {
+        console.error("Webhook: no se pudieron consultar los reembolsos del cobro:", error.message);
+        return res.status(500).send({ message: "Error al procesar el evento." });
+      }
+    }
+  }
+
   let duplicate = false;
   try {
     await db.sequelize.transaction(async transaction => {
@@ -341,20 +497,40 @@ exports.webhook = async (req, res) => {
         return;
       }
 
-      const session = event.data?.object;
-      let pagoId = event.type.startsWith("refund.")
-        ? session?.metadata?.pagoId
-        : (tiposRelevantes.has(event.type) ? session?.metadata?.pagoId : null);
-      if (!pagoId && event.type.startsWith("refund.") && session?.payment_intent) {
-        const paymentIntentId = typeof session.payment_intent === "string"
-          ? session.payment_intent
-          : session.payment_intent.id;
-        const pagoPorIntent = await Pago.findOne({
-          where: { stripePaymentIntentId: paymentIntentId },
-          transaction
-        });
-        pagoId = pagoPorIntent?.id;
+      if (esEventoReembolso) {
+        let pagoRelacionado = null;
+        if (event.type === "charge.refunded") {
+          const exitosos = refundsDelCharge.filter(refund => refund.status === "succeeded");
+          for (const refund of exitosos) {
+            pagoRelacionado = (await conciliarReembolso({
+              eventId: event.id,
+              refund,
+              transaction
+            })) || pagoRelacionado;
+          }
+          if (!exitosos.length) {
+            console.error("Webhook: charge.refunded sin reembolsos exitosos consultables; requiere revisión", {
+              eventId: event.id
+            });
+          }
+        } else if (event.data?.object) {
+          pagoRelacionado = await conciliarReembolso({
+            eventId: event.id,
+            refund: event.data.object,
+            transaction
+          });
+        }
+        await EventoStripe.create({
+          stripeEventId: event.id,
+          tipo: event.type,
+          pagoId: pagoRelacionado?.id || null,
+          procesadoEn: new Date()
+        }, { transaction });
+        return;
       }
+
+      const session = event.data?.object;
+      const pagoId = tiposRelevantes.has(event.type) ? session?.metadata?.pagoId : null;
       let pago = null;
       if (pagoId) {
         const pagoSnapshot = await Pago.findByPk(pagoId, { transaction });
@@ -369,36 +545,7 @@ exports.webhook = async (req, res) => {
           console.error("Webhook: pago no encontrado", { eventId: event.id, pagoId });
         } else {
           const cargoIdMetadata = session.metadata?.cargoId;
-          if (event.type.startsWith("refund.")) {
-            const paymentIntentId = typeof session.payment_intent === "string"
-              ? session.payment_intent
-              : session.payment_intent?.id;
-            const refundStatus = session.status;
-            const refundIsFull = Number.isSafeInteger(Number(session.amount)) &&
-              Number(session.amount) === aCentavos(pago.monto);
-            const currencyMatches = typeof session.currency === "string" &&
-              session.currency.toLowerCase() === pago.moneda.toLowerCase();
-            const intentMatches = Boolean(
-              pago.stripePaymentIntentId && pago.stripePaymentIntentId === paymentIntentId
-            );
-            if (refundStatus === "succeeded" && refundIsFull && currencyMatches && intentMatches &&
-                pago.estado === "pagado") {
-              await pago.update({
-                estado: "anulado",
-                anuladoEn: new Date(),
-                motivoAnulacion: pago.motivoAnulacion || "Reembolso confirmado por Stripe.",
-                stripeRefundId: session.id
-              }, { transaction });
-            } else if (refundStatus === "failed" && pago.estado === "pagado" &&
-                intentMatches && session.id === pago.stripeRefundId) {
-              await pago.update({
-                stripeRefundId: null,
-                anuladoEn: null,
-                anuladoPorId: null,
-                motivoAnulacion: null
-              }, { transaction });
-            }
-          } else if (pago.cargoId && String(pago.cargoId) !== String(cargoIdMetadata)) {
+          if (pago.cargoId && String(pago.cargoId) !== String(cargoIdMetadata)) {
             console.error("Webhook: el cargo de metadata no coincide", { eventId: event.id, pagoId });
             pago = null;
           } else if (pago.stripeSessionId && pago.stripeSessionId !== session.id) {
@@ -535,6 +682,71 @@ exports.cancelarCheckout = async (req, res) => {
   }
 };
 
+async function obtenerOCrearReembolso(stripe, pago, usuarioId, motivo) {
+  let refunds;
+  try {
+    refunds = await listarReembolsos(stripe, { payment_intent: pago.stripePaymentIntentId });
+  } catch (error) {
+    console.error("Error al consultar reembolsos en Stripe:", error.message, "pagoId:", pago.id);
+    return {
+      error: {
+        status: 502,
+        message: "No se pudieron consultar los reembolsos en Stripe; el pago no fue modificado."
+      }
+    };
+  }
+
+  const fallidos = refunds.filter(refund => ESTADOS_REEMBOLSO_FALLIDO.has(refund.status)).length;
+  const activos = refunds.filter(refund => !ESTADOS_REEMBOLSO_FALLIDO.has(refund.status));
+  if (activos.length > 1 || (activos.length === 1 && !reembolsoCoincide(pago, activos[0]))) {
+    return {
+      error: {
+        status: 409,
+        message: "El cobro tiene reembolsos parciales o múltiples en Stripe. El portal solo admite reembolsos completos; requiere conciliación manual."
+      }
+    };
+  }
+  if (activos.length === 1) return { refund: activos[0] };
+
+  try {
+    const refund = await stripe.refunds.create({
+      payment_intent: pago.stripePaymentIntentId,
+      amount: aCentavos(pago.monto),
+      metadata: {
+        pagoId: String(pago.id),
+        anuladoPorId: String(usuarioId),
+        motivo: motivo.slice(0, 400)
+      }
+    }, { idempotencyKey: `portal-reembolso-${pago.id}-${fallidos}` });
+    if (ESTADOS_REEMBOLSO_FALLIDO.has(refund.status)) {
+      return {
+        error: {
+          status: 502,
+          message: "Stripe no pudo procesar el reembolso; el pago permanece confirmado."
+        }
+      };
+    }
+    if (!reembolsoCoincide(pago, refund)) {
+      console.error("Stripe devolvió un reembolso inconsistente:", refund.id, "pagoId:", pago.id);
+      return {
+        error: {
+          status: 502,
+          message: "Stripe devolvió un reembolso inconsistente; el pago no fue modificado. Requiere revisión."
+        }
+      };
+    }
+    return { refund };
+  } catch (error) {
+    console.error("Error al crear reembolso en Stripe:", error.message, "pagoId:", pago.id);
+    return {
+      error: {
+        status: 502,
+        message: "Stripe no pudo procesar el reembolso; el pago no fue modificado."
+      }
+    };
+  }
+}
+
 // Los pagos nunca se eliminan: forman parte del rastro contable. Un administrador solo puede
 // - cancelar un Checkout 'pendiente' (se expira la sesión en Stripe), o
 // - anular un pago 'pagado' (reversión contable: deja de contar en el saldo y conserva el registro).
@@ -554,6 +766,7 @@ exports.anular = async (req, res) => {
   }
 
   const transaction = await db.sequelize.transaction();
+  let refundRemoto = null;
   try {
     // Mismo orden de bloqueo que el webhook: primero el cargo y luego el pago.
     const snapshot = await Pago.findByPk(pagoId, { transaction });
@@ -615,57 +828,35 @@ exports.anular = async (req, res) => {
           await transaction.rollback();
           return res.status(400).send({ message: "El pago no tiene un cobro de Stripe asociado para reembolsar." });
         }
-        try {
-          const reembolso = pago.stripeRefundId
-            ? await stripe.refunds.retrieve(pago.stripeRefundId)
-            : await stripe.refunds.create({
-              payment_intent: pago.stripePaymentIntentId,
-              metadata: { pagoId: String(pago.id) }
-            }, { idempotencyKey: `portal-reembolso-${pago.id}` });
-          reembolsoId = reembolso.id;
-          const coincide = Number(reembolso.amount) === aCentavos(pago.monto) &&
-            String(reembolso.currency || "").toLowerCase() === pago.moneda.toLowerCase() &&
-            (typeof reembolso.payment_intent === "string"
-              ? reembolso.payment_intent
-              : reembolso.payment_intent?.id) === pago.stripePaymentIntentId;
-          if (!coincide) {
-            console.error("Reembolso no coincide con el pago", { pagoId: pago.id, refundId: reembolso.id });
-            await transaction.rollback();
-            return res.status(502).send({
-              message: "El reembolso de Stripe no coincide con el pago (importe, moneda o cobro). El pago no fue modificado; revisa Stripe."
-            });
-          }
-          if (reembolso.status === "succeeded") {
-            Object.assign(cambios, {
-              estado: "anulado",
-              anuladoEn: new Date(),
-              anuladoPorId: req.userId,
-              motivoAnulacion: motivo,
-              stripeRefundId: reembolsoId
-            });
-          } else if (reembolso.status === "failed" || reembolso.status === "canceled") {
-            await transaction.rollback();
-            return res.status(502).send({
-              message: "Stripe no completó el reembolso. El pago permanece confirmado; revisa el estado en Stripe."
-            });
-          } else {
-            await pago.update({
-              stripeRefundId: reembolsoId,
-              anuladoPorId: req.userId,
-              motivoAnulacion: motivo
-            }, { transaction });
-            await transaction.commit();
-            return res.status(202).send({
-              id: pago.id,
-              estado: pago.estado,
-              reembolsado: false,
-              message: "El reembolso está pendiente de confirmación de Stripe; el estado del pago no se modificó."
-            });
-          }
-        } catch (stripeError) {
-          console.error("Error al reembolsar en Stripe:", stripeError.message, "pagoId:", pago.id);
+        const resultado = await obtenerOCrearReembolso(stripe, pago, req.userId, motivo);
+        if (resultado.error) {
           await transaction.rollback();
-          return res.status(502).send({ message: "Stripe no pudo procesar el reembolso; el pago no fue modificado." });
+          return res.status(resultado.error.status).send({ message: resultado.error.message });
+        }
+        refundRemoto = resultado.refund;
+        reembolsoId = refundRemoto.id;
+        if (refundRemoto.status === "succeeded") {
+          Object.assign(cambios, {
+            estado: "anulado",
+            anuladoEn: new Date(),
+            anuladoPorId: req.userId,
+            motivoAnulacion: motivo,
+            stripeRefundId: reembolsoId
+          });
+        } else {
+          await pago.update({
+            stripeRefundId: reembolsoId,
+            anuladoPorId: req.userId,
+            motivoAnulacion: motivo
+          }, { transaction });
+          await transaction.commit();
+          return res.status(202).send({
+            id: pago.id,
+            estado: pago.estado,
+            reembolsado: false,
+            reembolsoEnCurso: true,
+            message: "Stripe aún está procesando el reembolso. El pago seguirá como 'pagado' hasta que Stripe lo confirme."
+          });
         }
       } else {
         Object.assign(cambios, {
@@ -682,13 +873,19 @@ exports.anular = async (req, res) => {
       id: pago.id,
       estado: pago.estado,
       reembolsado: Boolean(reembolsoId),
+      reembolsoEnCurso: false,
       message: reembolsoId || pago.estado === "cancelado"
         ? "Pago anulado correctamente."
         : "Pago anulado contablemente. El dinero no se devolvió automáticamente; gestiona el reembolso en Stripe."
     });
   } catch (error) {
     if (!transaction.finished) await transaction.rollback();
-    console.error("Error al anular el pago:", error.message);
+    console.error("Error al anular el pago:", error.message, refundRemoto ? `reembolso Stripe: ${refundRemoto.id}` : "");
+    if (refundRemoto) {
+      return res.status(500).send({
+        message: "El reembolso fue creado en Stripe pero no se pudo guardar en el portal. El webhook intentará conciliarlo automáticamente."
+      });
+    }
     return res.status(500).send({ message: "No se pudo anular el pago." });
   }
 };

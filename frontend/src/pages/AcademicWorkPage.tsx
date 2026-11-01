@@ -31,7 +31,7 @@ function statusTone(status?: string): "success" | "warning" | "neutral" {
 }
 
 export default function AcademicWorkPage({ user }: { user: AuthUser }) {
-  const { selectedPeriodId } = useAcademicPeriod()
+  const { periods, selectedPeriodId } = useAcademicPeriod()
   const isTeacher = user.rol === "catedratico"
   const isStudent = user.rol === "alumno"
   const canManage = isTeacher
@@ -41,6 +41,7 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
+  const [coursesError, setCoursesError] = useState("")
   const [notice, setNotice] = useState("")
   const [statusFilter, setStatusFilter] = useState("")
   const [editing, setEditing] = useState<AcademicTask | null>(null)
@@ -51,44 +52,63 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
   const load = useCallback(async () => {
     setLoading(true)
     setError("")
-    try {
-      const filters = { periodoAcademicoId: selectedPeriodId ?? undefined }
-      const [taskRows, materialRows, scheduleRows] = await Promise.all([
-        academicWorkService.listTasks({
-          ...filters,
-          estado: isStudent ? statusFilter || undefined : undefined,
-        }),
-        academicWorkService.listMaterials(filters),
-        canManage ? academicAssignmentsService.listSchedules(filters) : Promise.resolve([]),
-      ])
-      setTasks(taskRows)
-      setMaterials(materialRows)
-      setSchedules(scheduleRows)
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "No fue posible consultar las tareas y materiales.",
-      )
-    } finally {
-      setLoading(false)
+    setCoursesError("")
+    const filters = { periodoAcademicoId: selectedPeriodId ?? undefined }
+    // Cada consulta es independiente: un error en una no debe vaciar las demás.
+    const [taskResult, materialResult, scheduleResult] = await Promise.allSettled([
+      academicWorkService.listTasks({
+        ...filters,
+        estado: isStudent ? statusFilter || undefined : undefined,
+      }),
+      academicWorkService.listMaterials(filters),
+      canManage ? academicAssignmentsService.listSchedules(filters) : Promise.resolve([]),
+    ])
+    const reason = (result: PromiseRejectedResult, fallback: string) =>
+      result.reason instanceof Error ? result.reason.message : fallback
+    const problems: string[] = []
+
+    if (taskResult.status === "fulfilled") setTasks(taskResult.value)
+    else {
+      setTasks([])
+      problems.push(`Tareas: ${reason(taskResult, "No fue posible consultar las tareas.")}`)
     }
+    if (materialResult.status === "fulfilled") setMaterials(materialResult.value)
+    else {
+      setMaterials([])
+      problems.push(`Materiales: ${reason(materialResult, "No fue posible consultar los materiales.")}`)
+    }
+    if (scheduleResult.status === "fulfilled") setSchedules(scheduleResult.value)
+    else {
+      setSchedules([])
+      setCoursesError(
+        `Cursos asignados: ${reason(scheduleResult, "No fue posible consultar tus cursos asignados.")}`,
+      )
+    }
+    setError(problems.join(" "))
+    setLoading(false)
   }, [canManage, isStudent, selectedPeriodId, statusFilter])
 
   useEffect(() => {
     load()
   }, [load])
 
-  const eligibleSchedules = useMemo(
-    () =>
-      schedules.filter(
-        (row) =>
-          row.periodoAcademicoId &&
-          row.curso &&
-          row.catedraticoId === Number(user.catedraticoId ?? row.catedraticoId),
-      ),
-    [schedules, user.catedraticoId],
-  )
+  // Un curso puede tener varios bloques de horario; se ofrece una opción por curso y período.
+  const courseOptions = useMemo(() => {
+    const options = new Map<string, { value: string; label: string }>()
+    for (const row of schedules) {
+      if (!row.periodoAcademicoId || !row.curso) continue
+      if (row.catedraticoId !== Number(user.catedraticoId ?? row.catedraticoId)) continue
+      const value = `${row.cursoId}:${row.periodoAcademicoId}`
+      const periodName =
+        periods.find((period) => period.id === row.periodoAcademicoId)?.nombre ??
+        `Período ${row.periodoAcademicoId}`
+      options.set(value, {
+        value,
+        label: `${row.curso.codigo} · ${row.curso.nombre} · ${periodName}`,
+      })
+    }
+    return [...options.values()]
+  }, [periods, schedules, user.catedraticoId])
 
   async function submitTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -257,12 +277,20 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
                   Curso y período
                   <select className="mt-2 h-11 w-full rounded-xl border border-line bg-white px-3" name="cursoPeriodo" required>
                     <option value="">Selecciona un curso</option>
-                    {eligibleSchedules.map((schedule) => (
-                      <option key={schedule.id} value={`${schedule.cursoId}:${schedule.periodoAcademicoId}`}>
-                        {schedule.curso?.codigo} · {schedule.curso?.nombre} · {schedule.periodo}
+                    {courseOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
                       </option>
                     ))}
                   </select>
+                  {coursesError ? (
+                    <span className="mt-2 block text-xs font-normal text-red-700">{coursesError}</span>
+                  ) : !loading && !courseOptions.length ? (
+                    <span className="mt-2 block text-xs font-normal text-amber-800">
+                      No tienes cursos asignados con horario en el período seleccionado. Solicita a administración
+                      que registre tu horario vinculado a un período académico.
+                    </span>
+                  ) : null}
                 </label>
               ) : (
                 <p className="rounded-xl bg-canvas p-3 text-sm font-semibold md:col-span-2">
@@ -389,7 +417,7 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
                 Curso y período
                 <select className="mt-2 h-11 w-full rounded-xl border border-line bg-white px-3" name="cursoPeriodo" required>
                   <option value="">Selecciona un curso</option>
-                  {eligibleSchedules.map((schedule) => <option key={schedule.id} value={`${schedule.cursoId}:${schedule.periodoAcademicoId}`}>{schedule.curso?.codigo} · {schedule.curso?.nombre} · {schedule.periodo}</option>)}
+                  {courseOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
               <label className="text-sm font-semibold">

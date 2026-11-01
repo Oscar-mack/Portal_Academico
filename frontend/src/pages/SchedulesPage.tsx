@@ -81,6 +81,11 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
+  const [catalogErrors, setCatalogErrors] = useState<{
+    courses?: string
+    teachers?: string
+    offers?: string
+  }>({})
   const [notice, setNotice] = useState("")
 
   const load = useCallback(async () => {
@@ -92,15 +97,33 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
       })
       setItems(scheduleRows)
       if (canManage) {
-        const [courseRows, teacherRows, offerRows] = await Promise.all([
+        // Los catálogos se consultan por separado: si uno falla, los demás siguen disponibles.
+        const [courseResult, teacherResult, offerResult] = await Promise.allSettled([
           catalogsService.listCourses(true),
           catedraticosService.list(),
           academicAssignmentsService.listCourseOffers(selectedPeriodId ?? undefined),
         ])
-        setCourses(courseRows)
-        setTeachers(teacherRows)
-        setOffers(offerRows)
+        const reason = (result: PromiseRejectedResult, fallback: string) =>
+          result.reason instanceof Error ? result.reason.message : fallback
+        setCourses(courseResult.status === "fulfilled" ? courseResult.value : [])
+        setTeachers(teacherResult.status === "fulfilled" ? teacherResult.value : [])
+        setOffers(offerResult.status === "fulfilled" ? offerResult.value : [])
+        setCatalogErrors({
+          courses:
+            courseResult.status === "rejected"
+              ? reason(courseResult, "No fue posible consultar los cursos.")
+              : undefined,
+          teachers:
+            teacherResult.status === "rejected"
+              ? reason(teacherResult, "No fue posible consultar los catedráticos.")
+              : undefined,
+          offers:
+            offerResult.status === "rejected"
+              ? reason(offerResult, "No fue posible consultar las secciones.")
+              : undefined,
+        })
       } else {
+        setCatalogErrors({})
         setOffers([])
         setCourses(
           Array.from(
@@ -125,6 +148,7 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
         )
       }
     } catch (requestError) {
+      setItems([])
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -405,7 +429,7 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
         )}
         {loading ? (
           <LoadingState />
-        ) : !visibleItems.length ? (
+        ) : error && !items.length ? null : !visibleItems.length ? (
           <EmptyState
             description={
               selectedPeriod
@@ -564,7 +588,7 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
             {!record && (
               <div className="sm:col-span-2">
                 <FormField
-                  hint="Selecciona una sección para que la inscripción y el horario queden vinculados."
+                  hint="Selecciona una sección para que los alumnos puedan inscribirse. Sin sección el horario solo habilita las tareas y evaluaciones del docente."
                   label="Sección (opcional para horarios históricos)"
                 >
                   <SelectInput
@@ -581,6 +605,17 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
                     ))}
                   </SelectInput>
                 </FormField>
+                {catalogErrors.offers ? (
+                  <p className="mt-2 text-xs text-red-700">
+                    Secciones: {catalogErrors.offers}
+                  </p>
+                ) : !offers.some((offer) => offer.activo) ? (
+                  <p className="mt-2 text-xs text-amber-800">
+                    No hay secciones activas
+                    {selectedPeriod ? ` en ${selectedPeriod.nombre}` : ""}. Créalas primero en
+                    «Oferta de cursos» para habilitar la inscripción de alumnos.
+                  </p>
+                ) : null}
               </div>
             )}
             {selectedOfferId && !record ? (
@@ -617,6 +652,11 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
                       </option>
                     ))}
                   </SelectInput>
+                  {catalogErrors.teachers ? (
+                    <p className="mt-2 text-xs text-red-700">{catalogErrors.teachers}</p>
+                  ) : !teachers.length ? (
+                    <p className="mt-2 text-xs text-amber-800">No hay catedráticos registrados.</p>
+                  ) : null}
                 </FormField>
                 <FormField label="Curso">
                   <SelectInput
@@ -634,6 +674,9 @@ export default function SchedulesPage({ user }: { user: AuthUser }) {
                         </option>
                       ))}
                   </SelectInput>
+                  {catalogErrors.courses && (
+                    <p className="mt-2 text-xs text-red-700">{catalogErrors.courses}</p>
+                  )}
                 </FormField>
                 <div className="sm:col-span-2">
                   <FormField label="Período académico">

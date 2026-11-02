@@ -67,7 +67,11 @@ module.exports = {
     ssl: {
       require: true,
       rejectUnauthorized: false
-    }
+    },
+    // Neon puede tardar unos segundos en reactivar el cómputo; sin límite, una conexión
+    // colgada bloquearía el arranque y /ready sin dejar rastro en los logs.
+    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS || 20000),
+    keepAlive: true
   },
   getConnectionSummary
 };

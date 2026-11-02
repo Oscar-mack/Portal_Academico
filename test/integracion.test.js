@@ -1334,3 +1334,41 @@ test("readiness rechaza un esquema incompleto", async () => {
   assert.equal(ready.body.checks.schema, "incomplete");
   assert.ok(ready.body.missingSchema.includes("table:eventos_stripe"));
 });
+
+test("readiness informa columnas faltantes y registra solo nombres de objetos", async () => {
+  const queryInterface = db.sequelize.getQueryInterface();
+  await queryInterface.removeColumn("pagos", "stripeRefundId");
+  const registros = [];
+  const consoleError = console.error;
+  console.error = (...args) => registros.push(JSON.stringify(args));
+  try {
+    const ready = await request(app).get("/ready");
+    assert.equal(ready.status, 503);
+    assert.ok(ready.body.missingSchema.includes("column:pagos.stripeRefundId"));
+  } finally {
+    console.error = consoleError;
+  }
+  assert.ok(registros.some(linea => linea.includes("column:pagos.stripeRefundId")));
+});
+
+test("readiness responde 503 si la base de datos falla o no responde a tiempo", async () => {
+  const originalQuery = db.sequelize.query;
+  const originalTimeout = process.env.READY_TIMEOUT_MS;
+  try {
+    db.sequelize.query = async () => { throw new Error("conexion rechazada"); };
+    let ready = await request(app).get("/ready");
+    assert.equal(ready.status, 503);
+    assert.deepEqual(ready.body.checks, { database: "unavailable", schema: "unknown" });
+
+    process.env.READY_TIMEOUT_MS = "50";
+    db.sequelize.query = () => new Promise(() => {});
+    ready = await request(app).get("/ready");
+    assert.equal(ready.status, 503);
+    assert.equal(ready.body.checks.database, "unavailable");
+    assert.equal((await request(app).get("/health")).status, 200);
+  } finally {
+    db.sequelize.query = originalQuery;
+    if (originalTimeout === undefined) delete process.env.READY_TIMEOUT_MS;
+    else process.env.READY_TIMEOUT_MS = originalTimeout;
+  }
+});

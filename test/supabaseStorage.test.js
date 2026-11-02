@@ -200,3 +200,63 @@ test("proveedor supabase no usa credenciales R2/S3 y R2 por defecto sigue exigie
     assert.throws(() => storage.ensureConfigured(), e => /r2, s3 o supabase/.test(String(e.message)) || e.status === 503);
   });
 });
+
+test("cuerpo de texto plano: se conserva solo con STORAGE_DEBUG_BODY y no llega al usuario", async () => {
+  await withSupabase(() => text(400, "Project not specified."), async ({ logs }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`), e => e.status === 503 && !/Project/.test(e.message));
+    assert.match(logs.join("\n"), /status=400 respuesta=texto/);
+    assert.match(logs.join("\n"), /cuerpo="Project not specified\."/);
+  }, { STORAGE_DEBUG_BODY: "true" });
+  await withSupabase(() => text(400, "Project not specified."), async ({ logs }) => {
+    await assert.rejects(storage.uploadObject(`materials/${ID}`, Readable.from([Buffer.from("a")]), "text/plain"));
+    assert.ok(!logs.join("\n").includes("Project not specified"));
+  });
+});
+
+test("cuerpo de texto: se lee como máximo 400 caracteres y se registran 200", async () => {
+  const long = "palabra ".repeat(500);
+  await withSupabase(() => text(400, long), async ({ logs }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`));
+    const body = logs.join("\n").match(/cuerpo="([^"]*)"/)[1];
+    assert.ok(body.length <= 200 && body.length > 100);
+  }, { STORAGE_DEBUG_BODY: "1" });
+});
+
+test("el SDK sigue recibiendo la respuesta original sin consumir y los errores JSON no cambian", async () => {
+  let original;
+  await withSupabase(() => (original = text(400, "Project not specified.")), async () => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`));
+    assert.equal(original.bodyUsed, true); // el SDK intentó leerla él mismo (json())
+  });
+  await withSupabase(() => json(400, { statusCode: "400", error: "Bad", message: "Invalid thing" }), async ({ logs }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`));
+    assert.match(logs.join("\n"), /cuerpo="Invalid thing"/);
+  }, { STORAGE_DEBUG_BODY: "true" });
+});
+
+test("las respuestas correctas no se leen ni se clonan", async () => {
+  let clones = 0;
+  await withSupabase(() => {
+    const response = ok();
+    const clone = response.clone.bind(response);
+    response.clone = () => { clones += 1; return clone(); };
+    return response;
+  }, async () => {
+    await storage.createDownloadUrl(`materials/${ID}`, "a.pdf");
+    assert.equal(clones, 0);
+  });
+});
+
+test("un cuerpo de error con la clave, JWT o Authorization no aparece en los logs", async () => {
+  await withSupabase(({ headers }) => text(400, `rechazado ${headers.authorization}`), async ({ logs, key }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`));
+    const all = logs.join("\n");
+    assert.ok(!all.includes(key));
+    assert.ok(!/Bearer/i.test(all.replace(/cuerpo=omitido/, "")));
+    assert.match(all, /cuerpo=omitido/);
+  }, { STORAGE_DEBUG_BODY: "true" });
+  await withSupabase(() => text(400, "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZSJ9.abc"), async ({ logs }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`));
+    assert.ok(!logs.join("\n").includes("eyJ"));
+  }, { STORAGE_DEBUG_BODY: "true" });
+});

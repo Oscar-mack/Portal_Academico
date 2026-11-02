@@ -1,5 +1,6 @@
 const { createClient } = require("@supabase/supabase-js");
 const { createHash } = require("node:crypto");
+const { AsyncLocalStorage } = require("node:async_hooks");
 
 // Mismo límite que app/utils/academicFileUpload.js; se repite aquí para evitar una dependencia circular.
 const MAX_OBJECT_BYTES = 20 * 1024 * 1024;
@@ -9,6 +10,10 @@ const MAX_CONCURRENT_UPLOADS = 4;
 const SIGNED_URL_SECONDS = 60;
 const KEY_PATTERN = /^(materials|tasks|submissions)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VARIABLES = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_BUCKET"];
+
+const MAX_ERROR_BODY_CHARS = 400;
+// Cada operación abre su propio contexto para asociar el cuerpo de error a la llamada correcta.
+const errorContext = new AsyncLocalStorage();
 
 let client;
 let clientSignature;
@@ -52,11 +57,45 @@ function configuration() {
   };
 }
 
+// supabase-js descarta el cuerpo de los errores que no son JSON. Se lee un clon (como máximo
+// 400 caracteres) para conservarlo; la respuesta original llega intacta al SDK.
+async function readErrorSnippet(response) {
+  const reader = response.clone().body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (text.length < MAX_ERROR_BODY_CHARS) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    // Sin await: en una rama de tee() la cancelación solo se resuelve cuando el SDK consume la otra.
+    reader.cancel().catch(() => {});
+  }
+  return text.slice(0, MAX_ERROR_BODY_CHARS);
+}
+
+async function capturingFetch(input, init) {
+  const response = await fetch(input, init);
+  const context = errorContext.getStore();
+  if (context && !response.ok && !/json/i.test(response.headers.get("content-type") || "")) {
+    try {
+      context.body = await readErrorSnippet(response);
+    } catch {
+      // El diagnóstico es opcional: un fallo al leer el clon no debe afectar a la operación.
+    }
+  }
+  return response;
+}
+
 function getClient() {
   const config = configuration();
   if (!client || clientSignature !== config.signature) {
     client = createClient(config.url, config.serviceRoleKey, {
-      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: { fetch: capturingFetch }
     });
     clientSignature = config.signature;
     console.log(`Almacenamiento académico: proveedor=supabase host=${config.host} bucket=${config.bucket}`);
@@ -88,24 +127,26 @@ function assertValidKey(key) {
 
 // Los errores de supabase-js se normalizan con la misma forma que usa r2Storage.translateFailure
 // ($metadata/$responseBodyText) y sin `status`, para que se registren y traduzcan a un 503 controlado.
-function providerFailure(cause) {
+function providerFailure(cause, body) {
   const failure = new Error("Fallo del proveedor de almacenamiento.");
   const status = Number(cause?.status ?? cause?.originalError?.status);
   failure.$metadata = Number.isInteger(status) ? { httpStatusCode: status } : {};
-  if (typeof cause?.message === "string") failure.$responseBodyText = cause.message;
+  if (body) failure.$responseBodyText = body;
+  else if (typeof cause?.message === "string") failure.$responseBodyText = cause.message;
   if (typeof cause?.statusCode === "string") failure.code = cause.statusCode;
   return failure;
 }
 
 async function guarded(call) {
+  const context = { body: "" };
   let result;
   try {
-    result = await call();
+    result = await errorContext.run(context, call);
   } catch (error) {
     if (error?.status) throw error;
-    throw providerFailure(error);
+    throw providerFailure(error, context.body);
   }
-  if (result?.error) throw providerFailure(result.error);
+  if (result?.error) throw providerFailure(result.error, context.body);
   return result.data;
 }
 

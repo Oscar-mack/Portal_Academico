@@ -260,3 +260,58 @@ test("un cuerpo de error con la clave, JWT o Authorization no aparece en los log
     assert.ok(!logs.join("\n").includes("eyJ"));
   }, { STORAGE_DEBUG_BODY: "true" });
 });
+
+function netError(code, name = "Error") {
+  const root = Object.assign(new Error(`connect ${code} 10.0.0.1:443 https://x.supabase.co/?token=SECRETO`), { code, name });
+  return Object.assign(new TypeError("fetch failed"), { cause: root });
+}
+
+test("diagnóstico: errores de red sin respuesta HTTP registran origen=red y el código anidado", async () => {
+  const codes = ["ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "ERR_TLS_CERT_ALTNAME_INVALID", "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT"];
+  for (const code of codes) {
+    await withSupabase(() => { throw netError(code); }, async ({ logs, key }) => {
+      for (const op of [() => storage.removeObject(`materials/${ID}`),
+        () => storage.uploadObject(`materials/${ID}`, Readable.from([Buffer.from("a")]), "text/plain"),
+        () => storage.createDownloadUrl(`materials/${ID}`, "a.pdf")]) {
+        await assert.rejects(op(), e => e.status === 503 && /no está disponible o devolvió/.test(e.message));
+      }
+      const failures = logs.filter(l => l.includes("fallo operacion="));
+      assert.equal(failures.length, 3);
+      for (const line of failures) {
+        assert.match(line, new RegExp(`status=n/a respuesta=ninguna codigo=${code} origen=red error=TypeError`));
+      }
+      const all = logs.join("\n");
+      for (const leak of [key, "SECRETO", "10.0.0.1", "https://", "token=", "Bearer"]) assert.ok(!all.includes(leak), leak);
+    }, { STORAGE_DEBUG_BODY: "true" });
+  }
+});
+
+test("diagnóstico: AbortError/TimeoutError y fetch failed sin código se marcan como red", async () => {
+  for (const thrown of [Object.assign(new Error("The operation was aborted"), { name: "AbortError" }),
+    Object.assign(new Error("timeout"), { name: "TimeoutError" }), new TypeError("fetch failed")]) {
+    await withSupabase(() => { throw thrown; }, async ({ logs }) => {
+      await assert.rejects(storage.removeObject(`materials/${ID}`), e => e.status === 503);
+      assert.match(logs.join("\n"), /status=n\/a respuesta=ninguna codigo=(n\/a|[A-Za-z]+) origen=red error=(TypeError|AbortError|TimeoutError)/);
+    });
+  }
+});
+
+test("diagnóstico: un error interno del SDK se marca como origen=sdk y no registra su mensaje", async () => {
+  await withSupabase(() => { throw new RangeError("fallo interno con SECRETO https://x.test"); }, async ({ logs, key }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`), e => e.status === 503);
+    const all = logs.join("\n");
+    assert.match(all, /status=n\/a respuesta=ninguna codigo=n\/a origen=sdk error=RangeError/);
+    assert.ok(!all.includes("SECRETO") && !all.includes(key) && !all.includes("https://x.test"));
+  }, { STORAGE_DEBUG_BODY: "true" });
+});
+
+test("diagnóstico: una respuesta HTTP recibida se registra como origen=http con su status", async () => {
+  await withSupabase(() => text(400, "Project not specified."), async ({ logs }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`));
+    assert.match(logs.join("\n"), /status=400 respuesta=texto codigo=400 origen=http/);
+  });
+  await withSupabase(() => json(403, { statusCode: "403", error: "Unauthorized", message: "x" }), async ({ logs }) => {
+    await assert.rejects(storage.removeObject(`materials/${ID}`));
+    assert.match(logs.join("\n"), /status=403 respuesta=texto codigo=403 origen=http/);
+  });
+});

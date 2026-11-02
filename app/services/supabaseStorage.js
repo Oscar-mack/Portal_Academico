@@ -125,15 +125,44 @@ function assertValidKey(key) {
   }
 }
 
+const NETWORK_CODE = /^(E[A-Z0-9]{3,20}|UND_ERR_[A-Z_]{2,40}|ERR_TLS_[A-Z_]{2,40}|ERR_SSL_[A-Z_]{2,40}|CERT_[A-Z_]{2,40}|DEPTH_ZERO_SELF_SIGNED_CERT|UNABLE_TO_[A-Z_]{2,40}|SELF_SIGNED_CERT_IN_CHAIN)$/;
+const NETWORK_NAMES = new Set(["AbortError", "TimeoutError"]);
+
+// Recorre la cadena de causas (hasta 5 niveles) y devuelve solo códigos y nombres con forma segura;
+// nunca mensajes, que pueden contener URLs o cabeceras.
+function inspectCauseChain(cause) {
+  let code;
+  let name;
+  let thrown = cause?.originalError ?? cause;
+  let current = thrown;
+  for (let depth = 0; current && typeof current === "object" && depth < 5; depth += 1) {
+    if (!code && typeof current.code === "string" && NETWORK_CODE.test(current.code)) code = current.code;
+    if (!name && typeof current.name === "string" && /^[A-Za-z]{1,40}$/.test(current.name)) name = current.name;
+    current = current.cause;
+  }
+  const fetchFailed = thrown instanceof TypeError && thrown.message === "fetch failed";
+  return { code, name: typeof thrown?.name === "string" && /^[A-Za-z]{1,40}$/.test(thrown.name) ? thrown.name : name, network: Boolean(code) || fetchFailed || NETWORK_NAMES.has(thrown?.name) };
+}
+
 // Los errores de supabase-js se normalizan con la misma forma que usa r2Storage.translateFailure
 // ($metadata/$responseBodyText) y sin `status`, para que se registren y traduzcan a un 503 controlado.
+// $origin distingue: http (hubo respuesta), red (fetch falló sin respuesta) o sdk (error interno).
 function providerFailure(cause, body) {
   const failure = new Error("Fallo del proveedor de almacenamiento.");
   const status = Number(cause?.status ?? cause?.originalError?.status);
-  failure.$metadata = Number.isInteger(status) ? { httpStatusCode: status } : {};
-  if (body) failure.$responseBodyText = body;
-  else if (typeof cause?.message === "string") failure.$responseBodyText = cause.message;
-  if (typeof cause?.statusCode === "string") failure.code = cause.statusCode;
+  const hasStatus = Number.isInteger(status);
+  failure.$metadata = hasStatus ? { httpStatusCode: status } : {};
+  if (hasStatus) {
+    failure.$origin = "http";
+    if (body) failure.$responseBodyText = body;
+    else if (typeof cause?.message === "string") failure.$responseBodyText = cause.message;
+    if (typeof cause?.statusCode === "string") failure.code = cause.statusCode;
+    return failure;
+  }
+  const { code, name, network } = inspectCauseChain(cause);
+  failure.$origin = network ? "red" : "sdk";
+  if (code) failure.code = code;
+  if (name) failure.$errorName = name;
   return failure;
 }
 

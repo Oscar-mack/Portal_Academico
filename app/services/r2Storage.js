@@ -72,6 +72,7 @@ function describeFailure(error) {
   }
   if (!code && error.name && error.name !== "Error") code = safeToken(error.name);
   if (!code) code = safeToken(error.code);
+  if (error.$origin === "red" || error.$origin === "sdk") kind = "ninguna";
   return { status, kind, code, requestId: safeToken(error.$metadata?.requestId) };
 }
 
@@ -91,6 +92,13 @@ function safeBodySnippet(error) {
 
 const debugBodyEnabled = () => ["true", "1"].includes((process.env.STORAGE_DEBUG_BODY || "").trim().toLowerCase());
 
+// Solo el proveedor Supabase marca el origen del fallo (http, red o sdk) y el nombre del error.
+function originDetail(error) {
+  if (!["http", "red", "sdk"].includes(error.$origin)) return "";
+  const name = safeToken(error.$errorName);
+  return ` origen=${error.$origin}${name ? ` error=${name}` : ""}`;
+}
+
 function translateFailure(error, operation, { provider, host, credentialLengths }) {
   if (!isStorageFailure(error)) return error;
   const { status, kind, code, requestId } = describeFailure(error);
@@ -107,7 +115,7 @@ function translateFailure(error, operation, { provider, host, credentialLengths 
   console.error(
     `Almacenamiento académico: fallo operacion=${operation} proveedor=${provider}` +
     `${host ? ` host=${host}` : ""} status=${status ?? "n/a"} respuesta=${kind} codigo=${code ?? "n/a"}` +
-    `${requestId ? ` requestId=${requestId}` : ""}${debug}`
+    `${requestId ? ` requestId=${requestId}` : ""}${originDetail(error)}${debug}`
   );
   const failure = new Error("El almacenamiento académico no está disponible o devolvió una respuesta inesperada.");
   failure.status = 503;

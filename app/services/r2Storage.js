@@ -74,13 +74,39 @@ function describeFailure(error) {
   return { status, kind, code, requestId: safeToken(error.$metadata?.requestId) };
 }
 
-function translateFailure(error, operation, { provider, host }) {
+const SENSITIVE_MARKERS = /authorization|bearer|cookie|signature|credential|x-amz|secret|token|password|apikey|api-key|eyJ|AKIA|https?:\/\/|[A-Za-z0-9+/_=-]{24,}/i;
+
+// Devuelve un fragmento del cuerpo solo si es seguro; ante la duda devuelve null.
+function safeBodySnippet(error) {
+  const raw = typeof error.$responseBodyText === "string" ? error.$responseBodyText : "";
+  const text = raw.slice(0, 400).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!text || SENSITIVE_MARKERS.test(text)) return null;
+  const configured = ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]
+    .map(name => (process.env[name] || "").trim())
+    .filter(value => value.length >= 4);
+  if (configured.some(value => text.includes(value))) return null;
+  return text.slice(0, 200);
+}
+
+const debugBodyEnabled = () => ["true", "1"].includes((process.env.STORAGE_DEBUG_BODY || "").trim().toLowerCase());
+
+function translateFailure(error, operation, { provider, host, credentialLengths }) {
   if (!isStorageFailure(error)) return error;
   const { status, kind, code, requestId } = describeFailure(error);
+  let debug = "";
+  if (debugBodyEnabled()) {
+    // Diagnóstico temporal: nunca registra valores de credenciales, solo sus longitudes.
+    const lengths = credentialLengths ? ` longitudClaveId=${credentialLengths.accessKeyId} longitudSecreto=${credentialLengths.secretAccessKey}` : "";
+    debug = lengths;
+    if (kind === "texto" && status >= 400 && status < 500) {
+      const snippet = safeBodySnippet(error);
+      debug += snippet ? ` cuerpo="${snippet}"` : " cuerpo=omitido";
+    }
+  }
   console.error(
     `Almacenamiento académico: fallo operacion=${operation} proveedor=${provider}` +
     `${host ? ` host=${host}` : ""} status=${status ?? "n/a"} respuesta=${kind} codigo=${code ?? "n/a"}` +
-    `${requestId ? ` requestId=${requestId}` : ""}`
+    `${requestId ? ` requestId=${requestId}` : ""}${debug}`
   );
   const failure = new Error("El almacenamiento académico no está disponible o devolvió una respuesta inesperada.");
   failure.status = 503;
@@ -142,7 +168,14 @@ function s3Configuration() {
     }
     endpoint = `${parsed.origin}${SUPABASE_S3_PATH}`;
   }
-  const { S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET } = process.env;
+  const { S3_REGION, S3_BUCKET } = process.env;
+  const accessKeyId = process.env.S3_ACCESS_KEY_ID.trim();
+  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY.trim();
+  // Un espacio o salto de línea dentro de la clave produce una cabecera Authorization inválida.
+  const malformed = [["S3_ACCESS_KEY_ID", accessKeyId], ["S3_SECRET_ACCESS_KEY", secretAccessKey]]
+    .filter(([, value]) => /\s/.test(value))
+    .map(([name]) => name);
+  if (malformed.length) throw notConfigured(malformed);
   const bucket = S3_BUCKET.trim();
   const clientOptions = {
     endpoint,
@@ -150,10 +183,11 @@ function s3Configuration() {
     forcePathStyle: true,
     requestChecksumCalculation: "WHEN_REQUIRED",
     responseChecksumValidation: "WHEN_REQUIRED",
-    credentials: { accessKeyId: S3_ACCESS_KEY_ID, secretAccessKey: S3_SECRET_ACCESS_KEY }
+    credentials: { accessKeyId, secretAccessKey }
   };
   return {
     provider: "s3",
+    credentialLengths: { accessKeyId: accessKeyId.length, secretAccessKey: secretAccessKey.length },
     bucket,
     host: parsed.host,
     signature: configurationSignature("s3", bucket, clientOptions),
@@ -173,7 +207,13 @@ function getClient() {
     clientSignature = config.signature;
     console.log(`Almacenamiento académico: proveedor=${config.provider}${config.host ? ` host=${config.host}` : ""} bucket=${config.bucket}`);
   }
-  return { client, bucket: config.bucket, provider: config.provider, host: config.host };
+  return {
+    client,
+    bucket: config.bucket,
+    provider: config.provider,
+    host: config.host,
+    credentialLengths: config.credentialLengths
+  };
 }
 
 function ensureConfigured() {

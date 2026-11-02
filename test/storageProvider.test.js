@@ -4,7 +4,7 @@ const storage = require("../app/services/r2Storage.js");
 
 const R2 = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"];
 const S3 = ["S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET"];
-const ALL = ["STORAGE_PROVIDER", ...R2, ...S3];
+const ALL = ["STORAGE_PROVIDER", "STORAGE_DEBUG_BODY", ...R2, ...S3];
 const SECRET_R2 = "r2-secret-canary-value";
 const SECRET_S3 = "s3-secret-canary-value";
 
@@ -363,4 +363,117 @@ test("la firma de descarga sigue funcionando y no deja rastro en logs", async ()
     assert.match(url, /X-Amz-Expires=60/);
     assert.equal(logs.join("\n").includes("X-Amz-Signature"), false);
   });
+});
+
+// --- Credenciales S3 y diagnóstico temporal del cuerpo ---
+
+test("las credenciales S3 se recortan y el cliente usa el valor limpio", async () => {
+  const env = { ...s3Env(), STORAGE_PROVIDER: "s3", S3_ACCESS_KEY_ID: "  s3-key-id\n", S3_SECRET_ACCESS_KEY: `\t${SECRET_S3} ` };
+  await withEnv(env, async () => {
+    const { client } = storage.getClient();
+    const credentials = await client.config.credentials();
+    assert.equal(credentials.accessKeyId, "s3-key-id");
+    assert.equal(credentials.secretAccessKey, SECRET_S3);
+  });
+});
+
+test("las credenciales S3 con espacios o saltos de línea internos se rechazan nombrando solo la variable", async () => {
+  for (const [name, value] of [
+    ["S3_ACCESS_KEY_ID", "abc def"],
+    ["S3_ACCESS_KEY_ID", "abc\ndef"],
+    ["S3_SECRET_ACCESS_KEY", "parte-uno parte-dos"],
+    ["S3_SECRET_ACCESS_KEY", "parte-uno\r\nparte-dos"]
+  ]) {
+    await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3", [name]: value }, logs => {
+      assertNotConfigured(() => storage.ensureConfigured());
+      const output = logs.join("\n");
+      assert.ok(output.includes(name));
+      assert.equal(output.includes("abc") || output.includes("parte-uno"), false);
+    });
+  }
+  for (const name of ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]) {
+    await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3", [name]: "   " }, () => assertNotConfigured(() => storage.ensureConfigured()));
+  }
+});
+
+test("las credenciales R2 no se ven afectadas por la normalización de S3", async () => {
+  await withEnv({ ...r2Env(), R2_ACCESS_KEY_ID: "r2-key-id" }, async () => {
+    const { client } = storage.getClient();
+    const credentials = await client.config.credentials();
+    assert.equal(credentials.accessKeyId, "r2-key-id");
+    assert.equal(credentials.secretAccessKey, SECRET_R2);
+  });
+});
+
+const BODY_400 = "Invalid request: bucket name is malformed";
+
+test("sin STORAGE_DEBUG_BODY el 400 de texto no registra cuerpo ni longitudes", { skip: skipTls }, async () => {
+  await withFakeProvider(() => ({ status: 400, type: "text/plain", body: BODY_400 }), async logs => {
+    await assertControlled(() => storage.uploadObject("materials/a", Buffer.from("hola"), "text/plain"), logs,
+      ["status=400", "respuesta=texto", "codigo=n/a"]);
+    const output = logs.join("\n");
+    assert.equal(output.includes("malformed"), false);
+    assert.equal(output.includes("cuerpo="), false);
+    assert.equal(output.includes("longitud"), false);
+  });
+});
+
+test("con STORAGE_DEBUG_BODY=true se registra el cuerpo 4xx de texto (máx. 200) y las longitudes", { skip: skipTls }, async () => {
+  const long = "x ".repeat(300);
+  await withFakeProvider(() => ({ status: 400, type: "text/plain", body: `Bad\nRequest\r\n${long}` }), async logs => {
+    process.env.STORAGE_DEBUG_BODY = "true";
+    await assertControlled(() => storage.removeObject("materials/a"), logs,
+      [`longitudClaveId=${"s3-key-id".length}`, `longitudSecreto=${SECRET_S3.length}`, 'cuerpo="Bad Request x x']);
+    const line = logs.find(entry => entry.includes("cuerpo="));
+    assert.equal(/[\r\n]/.test(line), false);
+    assert.ok(line.match(/cuerpo="([^"]*)"/)[1].length <= 200);
+    assert.equal(logs.join("\n").includes(SECRET_S3), false);
+  });
+});
+
+test("el diagnóstico omite el cuerpo si contiene JWT, firmas, Authorization, URLs, secretos o tokens largos", { skip: skipTls }, async () => {
+  const bodies = [
+    "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+    "Authorization: AWS4-HMAC-SHA256 Credential=x",
+    "X-Amz-Signature=abcdef",
+    "see https://proyecto.storage.supabase.co/object?token=1",
+    `clave ${SECRET_S3} rechazada`,
+    "cookie: session=1",
+    "id 1234567890abcdefghijklmnopqrstuvwxyz",
+    "Bearer abc"
+  ];
+  for (const body of bodies) {
+    await withFakeProvider(() => ({ status: 400, type: "text/plain", body }), async logs => {
+      process.env.STORAGE_DEBUG_BODY = "1";
+      await assertControlled(() => storage.removeObject("materials/a"), logs, ["cuerpo=omitido"]);
+      const output = logs.join("\n");
+      for (const fragment of ["eyJ", "AWS4", "Signature", "https://", SECRET_S3, "cookie", "1234567890", "Bearer"]) {
+        assert.equal(output.includes(fragment), false, `se filtró: ${fragment}`);
+      }
+    });
+  }
+});
+
+test("el diagnóstico no registra cuerpos que no son texto 4xx", { skip: skipTls }, async () => {
+  await withFakeProvider(() => ({ status: 404, type: "application/json", body: '{"error":"Bucket not found"}' }), async logs => {
+    process.env.STORAGE_DEBUG_BODY = "true";
+    await assertControlled(() => storage.removeObject("materials/a"), logs, ["respuesta=json", "longitudClaveId="]);
+    assert.equal(logs.join("\n").includes("cuerpo="), false);
+  });
+  await withFakeProvider(() => ({ status: 500, type: "text/plain", body: "fallo interno" }), async logs => {
+    process.env.STORAGE_DEBUG_BODY = "true";
+    await assertControlled(() => storage.removeObject("materials/a"), logs, ["status=500"]);
+    assert.equal(logs.join("\n").includes("cuerpo="), false);
+  });
+});
+
+test("los errores propios 413 y 415 siguen sin convertirse en 503 con el diagnóstico activo", async () => {
+  for (const status of [413, 415]) {
+    const stream = new (require("node:stream").Readable)({
+      read() { this.destroy(Object.assign(new Error("error propio"), { status })); }
+    });
+    await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3", STORAGE_DEBUG_BODY: "true" }, async () => {
+      await assert.rejects(() => storage.uploadObject("materials/x", stream, "text/plain"), error => error.status === status);
+    });
+  }
 });

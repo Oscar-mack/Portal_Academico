@@ -60,7 +60,22 @@ R2_SECRET_ACCESS_KEY
 R2_BUCKET_NAME
 ```
 
-Crear un bucket privado y credenciales limitadas a ese bucket, guardar secretos en el gestor de secretos del despliegue, rotarlos y no compartirlos. No se añadieron valores ni se cambiaron entornos existentes. Si no se configura R2, las cargas fallan explícitamente con HTTP 503; no hay almacenamiento simulado.
+Crear un bucket privado y credenciales limitadas a ese bucket, guardar secretos en el gestor de secretos del despliegue, rotarlos y no compartirlos. No se añadieron valores ni se cambiaron entornos existentes. Si no se configura el almacenamiento, las cargas fallan explícitamente con HTTP 503; no hay almacenamiento simulado.
+
+### Selección de proveedor (`STORAGE_PROVIDER`)
+
+`app/services/r2Storage.js` mantiene el mismo contrato (`uploadObject`, `removeObject`, `createDownloadUrl`, `ensureConfigured`) para tareas, adjuntos, materiales y descargas. El proveedor se elige solo con `STORAGE_PROVIDER`; nunca se deduce de las variables presentes:
+
+| `STORAGE_PROVIDER` | Proveedor | Variables que lee (únicamente estas) |
+|---|---|---|
+| vacío o ausente, `r2` | Cloudflare R2 (predeterminado) | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` |
+| `s3` | Almacenamiento compatible con S3 (p. ej. Supabase Storage, entorno de ensayo) | `S3_ENDPOINT` (URL `https://`), `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET` |
+
+- Los grupos `R2_*` y `S3_*` son independientes: no hay respaldo cruzado de credenciales.
+- Falta una variable del proveedor activo, `S3_ENDPOINT` no es `https` o el valor de `STORAGE_PROVIDER` es inválido: HTTP 503 controlado. El detalle (solo nombres de variables, nunca valores) se registra en el log del servidor.
+- Con `s3` el cliente usa `forcePathStyle`, la región indicada y `requestChecksumCalculation`/`responseChecksumValidation` en `WHEN_REQUIRED`. R2 conserva su configuración original (región `auto`, endpoint derivado de `R2_ACCOUNT_ID`).
+- Al crear el cliente se registra el proveedor, el host del endpoint y el bucket (sin claves), para verificar en los logs que el servicio apunta al entorno correcto.
+- Usar un proyecto y un bucket privado exclusivos de ensayo, con credenciales que no se compartan con Production. No se requieren migraciones SQL.
 
 Precios consultados para la propuesta, sujetos a región/tarifa vigente, impuestos y cambios del proveedor: R2 Standard publica aproximadamente US$0.015/GB-mes, operaciones Clase A US$4.50 por millón y Clase B US$0.36 por millón, con 10 GB-mes, 1 millón A y 10 millones B de nivel gratuito mensual y egreso a Internet sin cargo. AWS S3 Standard publica aproximadamente US$0.023/GB-mes en regiones de referencia y puede cobrar transferencia de salida. Confirmar cotización y tier en el momento de adoptar.
 

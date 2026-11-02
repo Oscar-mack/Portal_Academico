@@ -207,3 +207,160 @@ test("el diagnóstico indica solo los nombres de variables faltantes", async () 
     assert.ok(logs.some(line => line.includes("S3_BUCKET")));
   });
 });
+
+// --- Endpoint Supabase y errores inesperados del proveedor ---
+
+test("Supabase exige el path /storage/v1/s3 y se normaliza", async () => {
+  const base = { ...s3Env(), STORAGE_PROVIDER: "s3" };
+  for (const endpoint of [
+    "https://ref.storage.supabase.co",
+    "https://ref.storage.supabase.co/",
+    "https://ref.storage.supabase.co/storage/v1",
+    "https://ref.storage.supabase.co/otro/s3",
+    "https://user:pass@ref.storage.supabase.co/storage/v1/s3"
+  ]) {
+    await withEnv({ ...base, S3_ENDPOINT: endpoint }, logs => {
+      assertNotConfigured(() => storage.ensureConfigured());
+      assert.equal(logs.join("\n").includes("pass"), false);
+    });
+  }
+  for (const endpoint of ["https://ref.storage.supabase.co/storage/v1/s3", "https://ref.storage.supabase.co/storage/v1/s3/"]) {
+    await withEnv({ ...base, S3_ENDPOINT: endpoint }, async () => {
+      storage.ensureConfigured();
+      const { client, host } = storage.getClient();
+      assert.equal(host, "ref.storage.supabase.co");
+      assert.equal((await client.config.endpoint()).path, "/storage/v1/s3");
+    });
+  }
+});
+
+test("un endpoint S3 que no es de Supabase no exige ese path", async () => {
+  await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3", S3_ENDPOINT: "https://s3.otro.example.test" },
+    () => storage.ensureConfigured());
+});
+
+const { createServer } = require("node:https");
+const { execFileSync } = require("node:child_process");
+const { mkdtempSync, readFileSync, rmSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const path = require("node:path");
+
+function selfSignedCertificate() {
+  const dir = mkdtempSync(path.join(tmpdir(), "storage-test-"));
+  try {
+    execFileSync("openssl", [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost",
+      "-keyout", path.join(dir, "k.pem"), "-out", path.join(dir, "c.pem")
+    ], { stdio: "ignore" });
+    return { key: readFileSync(path.join(dir, "k.pem")), cert: readFileSync(path.join(dir, "c.pem")) };
+  } catch {
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const certificate = selfSignedCertificate();
+
+// Servidor HTTPS local que imita las respuestas del proveedor; no hay red externa.
+async function withFakeProvider(reply, fn) {
+  const requests = [];
+  const server = createServer(certificate, (req, res) => {
+    req.resume();
+    req.on("end", () => {
+      requests.push({ method: req.method, url: req.url.split("?")[0] });
+      const { status, type, body } = reply(req);
+      res.writeHead(status, { "content-type": type });
+      res.end(body);
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const previous = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  const env = { ...s3Env(), STORAGE_PROVIDER: "s3", S3_ENDPOINT: `https://127.0.0.1:${server.address().port}` };
+  try {
+    return await withEnv(env, logs => fn(logs, requests));
+  } finally {
+    if (previous === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previous;
+    await new Promise(resolve => server.close(resolve));
+  }
+}
+
+const skipTls = certificate ? false : "openssl no está disponible";
+const SECRETS = [SECRET_S3, "s3-key-id", "Authorization", "X-Amz-Signature", "Credential="];
+
+async function assertControlled(operation, logs, expected) {
+  await assert.rejects(operation, error => {
+    assert.equal(error.status, 503);
+    assert.match(error.message, /almacenamiento académico no está disponible/);
+    assert.equal(/aws-sdk|XML|Deserialization/i.test(error.message), false);
+    return true;
+  });
+  const output = logs.join("\n");
+  for (const text of expected) assert.ok(output.includes(text), `falta en el log: ${text}`);
+  for (const secret of SECRETS) assert.equal(output.includes(secret), false);
+}
+
+test("respuesta JSON inesperada se convierte en 503 y el log solo trae datos seguros", { skip: skipTls }, async () => {
+  const body = JSON.stringify({ statusCode: "404", error: "Bucket not found", message: "token-secreto-en-cuerpo" });
+  await withFakeProvider(() => ({ status: 404, type: "application/json", body }), async logs => {
+    await assertControlled(() => storage.uploadObject("materials/a", Buffer.from("hola"), "text/plain"), logs,
+      ["operacion=subida", "proveedor=s3", "host=127.0.0.1:", "status=404", "respuesta=json", "codigo=Bucket not found"]);
+    assert.equal(logs.join("\n").includes("token-secreto-en-cuerpo"), false);
+  });
+});
+
+test("respuesta HTML inesperada se convierte en 503", { skip: skipTls }, async () => {
+  await withFakeProvider(() => ({ status: 404, type: "text/html", body: "<!DOCTYPE html><html>nginx</html>" }), async logs => {
+    await assertControlled(() => storage.removeObject("materials/a"), logs,
+      ["operacion=eliminacion", "status=404", "respuesta=html"]);
+  });
+});
+
+test("respuesta XML de error S3 conserva su código y se convierte en 503", { skip: skipTls }, async () => {
+  const body = '<?xml version="1.0"?><Error><Code>NoSuchBucket</Code><Message>x</Message></Error>';
+  await withFakeProvider(() => ({ status: 404, type: "application/xml", body }), async logs => {
+    await assertControlled(() => storage.uploadObject("materials/a", Buffer.from("hola"), "text/plain"), logs,
+      ["status=404", "codigo=NoSuchBucket"]);
+  });
+});
+
+test("las credenciales rechazadas (403) no se propagan como 401/403 al cliente", { skip: skipTls }, async () => {
+  const body = '<Error><Code>SignatureDoesNotMatch</Code></Error>';
+  await withFakeProvider(() => ({ status: 403, type: "application/xml", body }), async logs => {
+    await assertControlled(() => storage.removeObject("materials/a"), logs, ["status=403", "codigo=SignatureDoesNotMatch"]);
+  });
+});
+
+test("subida y eliminación correctas usan path style con el bucket y la clave", { skip: skipTls }, async () => {
+  await withFakeProvider(() => ({ status: 200, type: "application/xml", body: "" }), async (logs, requests) => {
+    await storage.uploadObject("materials/ok", Buffer.from("hola"), "text/plain");
+    await storage.removeObject("materials/ok");
+    assert.deepEqual(requests.map(r => `${r.method} ${r.url}`), [
+      "PUT /portal-ensayo/materials/ok",
+      "DELETE /portal-ensayo/materials/ok"
+    ]);
+    assert.equal(logs.some(line => line.includes("fallo")), false);
+  });
+});
+
+test("un error de la aplicación con status propio no se reescribe", async () => {
+  const stream = new (require("node:stream").Readable)({
+    read() {
+      this.destroy(Object.assign(new Error("El contenido no coincide con el formato declarado."), { status: 415 }));
+    }
+  });
+  await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3" }, async () => {
+    await assert.rejects(() => storage.uploadObject("materials/x", stream, "text/plain"), error => error.status === 415);
+  });
+});
+
+test("la firma de descarga sigue funcionando y no deja rastro en logs", async () => {
+  await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3" }, async logs => {
+    const url = await storage.createDownloadUrl("materials/a", "Informe final.pdf");
+    assert.match(url, /X-Amz-Algorithm=AWS4-HMAC-SHA256/);
+    assert.match(url, /X-Amz-Expires=60/);
+    assert.equal(logs.join("\n").includes("X-Amz-Signature"), false);
+  });
+});

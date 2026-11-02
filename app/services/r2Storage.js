@@ -24,6 +24,69 @@ function notConfigured(missing) {
   );
 }
 
+const SUPABASE_S3_PATH = "/storage/v1/s3";
+const SAFE_TOKEN = /^[A-Za-z0-9_. -]{1,60}$/;
+const NETWORK_CODES = new Set([
+  "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "EPIPE",
+  "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
+]);
+const NETWORK_NAMES = new Set(["TimeoutError", "RequestTimeout", "NetworkingError"]);
+
+function safeToken(value) {
+  if (typeof value !== "string") return undefined;
+  const token = value.trim();
+  return SAFE_TOKEN.test(token) ? token : undefined;
+}
+
+function isStorageFailure(error) {
+  if (!error || typeof error !== "object" || error.status) return false;
+  return Boolean(
+    error.$metadata || error.$response || error.$fault ||
+    NETWORK_CODES.has(error.code) || NETWORK_NAMES.has(error.name) ||
+    /^@aws-sdk/.test(String(error.message))
+  );
+}
+
+// Extrae solo datos no sensibles: nunca el cuerpo, las cabeceras ni las URL de la petición.
+function describeFailure(error) {
+  const response = error.$response;
+  const status = response?.statusCode ?? error.$metadata?.httpStatusCode;
+  const contentType = String(response?.headers?.["content-type"] || "").toLowerCase();
+  const body = typeof error.$responseBodyText === "string" ? error.$responseBodyText.trimStart() : "";
+  let kind = "ninguna";
+  let code;
+  if (body || contentType) {
+    if (body.startsWith("<!") || body.toLowerCase().startsWith("<html") || contentType.includes("html")) kind = "html";
+    else if (body.startsWith("{") || body.startsWith("[") || contentType.includes("json")) kind = "json";
+    else if (body.startsWith("<") || contentType.includes("xml")) kind = "xml";
+    else kind = "texto";
+  }
+  if (kind === "json") {
+    try {
+      const parsed = JSON.parse(body);
+      code = safeToken(parsed?.error) || safeToken(parsed?.code);
+    } catch {
+      // Cuerpo JSON truncado o inválido: basta con indicar el tipo.
+    }
+  }
+  if (!code && error.name && error.name !== "Error") code = safeToken(error.name);
+  if (!code) code = safeToken(error.code);
+  return { status, kind, code, requestId: safeToken(error.$metadata?.requestId) };
+}
+
+function translateFailure(error, operation, { provider, host }) {
+  if (!isStorageFailure(error)) return error;
+  const { status, kind, code, requestId } = describeFailure(error);
+  console.error(
+    `Almacenamiento académico: fallo operacion=${operation} proveedor=${provider}` +
+    `${host ? ` host=${host}` : ""} status=${status ?? "n/a"} respuesta=${kind} codigo=${code ?? "n/a"}` +
+    `${requestId ? ` requestId=${requestId}` : ""}`
+  );
+  const failure = new Error("El almacenamiento académico no está disponible o devolvió una respuesta inesperada.");
+  failure.status = 503;
+  return failure;
+}
+
 function configurationSignature(provider, bucket, clientOptions) {
   return createHash("sha256")
     .update(JSON.stringify({ provider, bucket, clientOptions }))
@@ -60,14 +123,25 @@ function s3Configuration() {
   const names = ["S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET"];
   const missing = names.filter(name => !(process.env[name] || "").trim());
   if (missing.length) throw notConfigured(missing);
-  const endpoint = process.env.S3_ENDPOINT.trim();
+  const rawEndpoint = process.env.S3_ENDPOINT.trim();
   let parsed;
   try {
-    parsed = new URL(endpoint);
+    parsed = new URL(rawEndpoint);
   } catch {
     throw notConfigured(["S3_ENDPOINT"]);
   }
-  if (parsed.protocol !== "https:") throw notConfigured(["S3_ENDPOINT"]);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw notConfigured(["S3_ENDPOINT"]);
+  let endpoint = rawEndpoint;
+  if (/(^|\.)supabase\.(co|in)$/i.test(parsed.hostname)) {
+    // El host raíz de Supabase sirve la API REST (JSON); la API S3 solo vive bajo este path.
+    if (parsed.pathname.replace(/\/+$/, "") !== SUPABASE_S3_PATH) {
+      throw storageError(
+        "El almacenamiento académico no está configurado.",
+        `S3_ENDPOINT de Supabase debe terminar en ${SUPABASE_S3_PATH}.`
+      );
+    }
+    endpoint = `${parsed.origin}${SUPABASE_S3_PATH}`;
+  }
   const { S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET } = process.env;
   const bucket = S3_BUCKET.trim();
   const clientOptions = {
@@ -99,7 +173,7 @@ function getClient() {
     clientSignature = config.signature;
     console.log(`Almacenamiento académico: proveedor=${config.provider}${config.host ? ` host=${config.host}` : ""} bucket=${config.bucket}`);
   }
-  return { client, bucket: config.bucket };
+  return { client, bucket: config.bucket, provider: config.provider, host: config.host };
 }
 
 function ensureConfigured() {
@@ -107,34 +181,46 @@ function ensureConfigured() {
 }
 
 async function uploadObject(key, body, contentType) {
-  const { client: s3, bucket } = getClient();
-  await new Upload({
-    client: s3,
-    params: { Bucket: bucket, Key: key, Body: body, ContentType: contentType },
-    queueSize: 1,
-    partSize: 5 * 1024 * 1024,
-    leavePartsOnError: false
-  }).done();
+  const { client: s3, bucket, ...origin } = getClient();
+  try {
+    await new Upload({
+      client: s3,
+      params: { Bucket: bucket, Key: key, Body: body, ContentType: contentType },
+      queueSize: 1,
+      partSize: 5 * 1024 * 1024,
+      leavePartsOnError: false
+    }).done();
+  } catch (error) {
+    throw translateFailure(error, "subida", origin);
+  }
 }
 
 async function removeObject(key) {
-  const { client: s3, bucket } = getClient();
-  await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  const { client: s3, bucket, ...origin } = getClient();
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  } catch (error) {
+    throw translateFailure(error, "eliminacion", origin);
+  }
 }
 
 async function createDownloadUrl(key, fileName) {
-  const { client: s3, bucket } = getClient();
+  const { client: s3, bucket, ...origin } = getClient();
   const safeFileName = fileName.replace(/[\r\n"]/g, "_");
   const disposition = `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`;
-  return getSignedUrl(
-    s3,
-    new GetObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      ResponseContentDisposition: disposition
-    }),
-    { expiresIn: 60 }
-  );
+  try {
+    return await getSignedUrl(
+      s3,
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ResponseContentDisposition: disposition
+      }),
+      { expiresIn: 60 }
+    );
+  } catch (error) {
+    throw translateFailure(error, "firma", origin);
+  }
 }
 
 module.exports = { createDownloadUrl, ensureConfigured, getClient, removeObject, uploadObject };

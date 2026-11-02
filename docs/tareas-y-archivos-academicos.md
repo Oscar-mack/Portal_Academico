@@ -73,6 +73,8 @@ Crear un bucket privado y credenciales limitadas a ese bucket, guardar secretos 
 
 - Los grupos `R2_*` y `S3_*` son independientes: no hay respaldo cruzado de credenciales.
 - Falta una variable del proveedor activo, `S3_ENDPOINT` no es `https` o el valor de `STORAGE_PROVIDER` es inválido: HTTP 503 controlado. El detalle (solo nombres de variables, nunca valores) se registra en el log del servidor.
+- Si `S3_ENDPOINT` apunta a un host `*.supabase.co`, debe terminar en `/storage/v1/s3` (p. ej. `https://<ref>.storage.supabase.co/storage/v1/s3`); sin ese path Supabase responde JSON de su API REST y el SDK falla al interpretarlo como XML. También se rechazan endpoints con usuario/contraseña. Otros proveedores S3 no tienen esta exigencia.
+- Los fallos del proveedor (respuesta no XML, credenciales o permisos rechazados, bucket inexistente, red) se devuelven al cliente como HTTP 503 con un mensaje genérico. El log del servidor registra solo `operacion`, `proveedor`, `host`, `status`, tipo de respuesta (`json`/`html`/`xml`/`texto`/`ninguna`), código seguro y `requestId`; nunca cabeceras, claves, URL firmadas ni el cuerpo de la respuesta. Los errores propios de la aplicación (413, 415, etc.) no se modifican.
 - Con `s3` el cliente usa `forcePathStyle`, la región indicada y `requestChecksumCalculation`/`responseChecksumValidation` en `WHEN_REQUIRED`. R2 conserva su configuración original (región `auto`, endpoint derivado de `R2_ACCOUNT_ID`).
 - Al crear el cliente se registra el proveedor, el host del endpoint y el bucket (sin claves), para verificar en los logs que el servicio apunta al entorno correcto.
 - Usar un proyecto y un bucket privado exclusivos de ensayo, con credenciales que no se compartan con Production. No se requieren migraciones SQL.

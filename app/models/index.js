@@ -5,7 +5,10 @@ const net = require("node:net");
 const sequelizeOptions = {
 	dialect: dbConfig.dialect,
 	pool: dbConfig.pool,
-	dialectOptions: dbConfig.dialectOptions
+	dialectOptions: dbConfig.dialectOptions,
+	// Por defecto Sequelize imprime cada SQL; con health checks periódicos inundaba los logs
+	// de Render y ocultaba los errores reales.
+	logging: process.env.DB_LOGGING === "true" ? console.log : false
 };
 
 const hasIndividualDatabaseConfiguration = [

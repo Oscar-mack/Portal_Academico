@@ -1345,6 +1345,7 @@ test("readiness informa columnas faltantes y registra solo nombres de objetos", 
     const ready = await request(app).get("/ready");
     assert.equal(ready.status, 503);
     assert.ok(ready.body.missingSchema.includes("column:pagos.stripeRefundId"));
+    assert.ok(ready.body.pendingMigrations.includes("007-payment-annulment"));
   } finally {
     console.error = consoleError;
   }

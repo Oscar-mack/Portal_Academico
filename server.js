@@ -113,13 +113,31 @@ async function startServer() {
       console.log("Base de datos sincronizada correctamente.");
     }
 
-    app.listen(PORT, () => {
+    // Render enruta por 0.0.0.0 y su proxy mantiene conexiones largas: el keep-alive de Node
+    // debe superar el suyo para evitar 502 intermitentes.
+    const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server is running on port ${PORT}.`);
+    });
+    server.keepAliveTimeout = 120000;
+    server.headersTimeout = 121000;
+
+    process.once("SIGTERM", () => {
+      console.log("SIGTERM recibido; cerrando el servidor.");
+      server.close(() => db.sequelize.close().finally(() => process.exit(0)));
+      setTimeout(() => process.exit(0), 10000).unref();
     });
   } catch (error) {
     logDatabaseError("Error al sincronizar PostgreSQL:", error, connectionSummary);
     process.exit(1);
   }
 }
+
+process.on("unhandledRejection", reason => {
+  console.error("Promesa rechazada sin manejar:", reason instanceof Error ? reason.message : reason);
+});
+process.on("uncaughtException", error => {
+  console.error("Excepción no capturada:", error.message);
+  process.exit(1);
+});
 
 startServer();

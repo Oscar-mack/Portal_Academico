@@ -106,6 +106,25 @@ async function findMissingSchema() {
   return missing;
 }
 
+// Relaciona objetos faltantes con la migración que los crea, para orientar al operador.
+const MIGRATION_OBJECTS = [
+  ["007-payment-annulment", /^column:pagos\.(anuladoEn|anuladoPorId|motivoAnulacion|stripeRefundId)$/],
+  ["006-course-offerings-and-self-enrollment", /^(table:ofertas_curso|column:ofertas_curso\..+|column:(asignacion_cursos|horario_catedraticos)\.ofertaCursoId|trigger:(horarios|asignaciones)_validar_oferta_biu)$/],
+  ["005-academic-tasks-and-files", /^(table:(tareas|archivos_academicos|adjuntos_tarea|materiales_curso|entregas_tarea|auditoria_tareas)|column:(tareas|archivos_academicos|adjuntos_tarea|materiales_curso|entregas_tarea|auditoria_tareas)\..+|trigger:(tareas_validar_contexto_biu|entregas_tarea_validar_bi|auditoria_tareas_inmutable_bud))$/],
+  ["004-nota-publicada-en", /^column:nota\.publicadaEn$/],
+  ["003-financial-charges-and-stripe-events", /^(table:(cargos|pagos|eventos_stripe|requisitos_solvencia_documentos)|column:(cargos|pagos|eventos_stripe|requisitos_solvencia_documentos)\..+|trigger:(pagos_validar_cargo_biu|cargos_proteger_pagos_bu|cargos_no_delete_con_historial_bd))$/],
+  ["002-academic-periods-and-assessments", /^(table:(ciclos_academicos|periodos_academicos|evaluaciones|calificaciones_evaluacion|auditoria_notas)|column:(ciclos_academicos|periodos_academicos|evaluaciones|calificaciones_evaluacion|auditoria_notas|asignacion_cursos|horario_catedraticos|nota)\..+|trigger:(evaluaciones_maximo_biu|calificaciones_evaluacion_validar_biu|evaluaciones_maximo_calificaciones_bu|auditoria_notas_inmutable_bud))$/]
+];
+
+function pendingMigrations(missing) {
+  const pending = new Set();
+  for (const item of missing) {
+    const match = MIGRATION_OBJECTS.find(([, pattern]) => pattern.test(item));
+    if (match) pending.add(match[0]);
+  }
+  return [...pending].sort();
+}
+
 const readyTimeoutMs = () => Number(process.env.READY_TIMEOUT_MS || 8000);
 
 function withTimeout(promise, ms) {
@@ -156,11 +175,13 @@ app.get("/ready", async (req, res) => {
     if (missingSchema.length > 0) {
       // Solo nombres de objetos de esquema (sin datos ni credenciales): permite ver en los
       // logs de Render qué migración falta cuando el health check falla.
-      console.error("Readiness: esquema incompleto.", { missingSchema });
+      const pendingMigrationFiles = pendingMigrations(missingSchema);
+      console.error("Readiness: esquema incompleto.", { missingSchema, pendingMigrationFiles });
       return res.status(503).json({
         status: "unavailable",
         checks: { database: "ok", schema: "incomplete" },
-        missingSchema
+        missingSchema,
+        pendingMigrations: pendingMigrationFiles
       });
     }
     return res.json({ status: "ready", checks: { database: "ok", schema: "ok" } });

@@ -143,6 +143,28 @@ test("el cliente se reconstruye cuando cambia la configuración", async () => {
   assert.notEqual(first, other);
 });
 
+test("el cliente S3 se reconstruye si cambia únicamente el secreto", async () => {
+  const first = await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3" }, () => storage.getClient().client);
+  const rotatedSecret = "s3-rotated-secret-canary";
+  await withEnv({ ...s3Env(), S3_SECRET_ACCESS_KEY: rotatedSecret, STORAGE_PROVIDER: "s3" }, logs => {
+    const second = storage.getClient().client;
+    assert.notEqual(first, second);
+    assert.ok(logs.length);
+    assert.equal(logs.join("\n").includes(rotatedSecret), false);
+  });
+});
+
+test("el cliente R2 se reconstruye si cambia únicamente el secreto", async () => {
+  const first = await withEnv(r2Env(), () => storage.getClient().client);
+  const rotatedSecret = "r2-rotated-secret-canary";
+  await withEnv({ ...r2Env(), R2_SECRET_ACCESS_KEY: rotatedSecret }, logs => {
+    const second = storage.getClient().client;
+    assert.notEqual(first, second);
+    assert.ok(logs.length);
+    assert.equal(logs.join("\n").includes(rotatedSecret), false);
+  });
+});
+
 test("la URL firmada de S3 usa SigV4, la región y dura 60 segundos", async () => {
   await withEnv({ ...s3Env(), STORAGE_PROVIDER: "s3" }, async () => {
     const url = new URL(await storage.createDownloadUrl("submissions/abc", "Informe final.pdf"));

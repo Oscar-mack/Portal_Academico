@@ -5,6 +5,7 @@ const {
 } = require("@aws-sdk/client-s3");
 const { Upload } = require("@aws-sdk/lib-storage");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { createHash } = require("node:crypto");
 
 let client;
 let clientSignature;
@@ -23,6 +24,12 @@ function notConfigured(missing) {
   );
 }
 
+function configurationSignature(provider, bucket, clientOptions) {
+  return createHash("sha256")
+    .update(JSON.stringify({ provider, bucket, clientOptions }))
+    .digest("hex");
+}
+
 function selectedProvider() {
   const raw = (process.env.STORAGE_PROVIDER || "").trim().toLowerCase();
   if (!raw) return "r2";
@@ -35,16 +42,17 @@ function r2Configuration() {
   const missing = names.filter(name => !process.env[name]);
   if (missing.length) throw notConfigured(missing);
   const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME } = process.env;
+  const clientOptions = {
+    endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    region: "auto",
+    forcePathStyle: true,
+    credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY }
+  };
   return {
     provider: "r2",
     bucket: R2_BUCKET_NAME,
-    signature: ["r2", R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_BUCKET_NAME].join("|"),
-    clientOptions: {
-      endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-      region: "auto",
-      forcePathStyle: true,
-      credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY }
-    }
+    signature: configurationSignature("r2", R2_BUCKET_NAME, clientOptions),
+    clientOptions
   };
 }
 
@@ -61,19 +69,21 @@ function s3Configuration() {
   }
   if (parsed.protocol !== "https:") throw notConfigured(["S3_ENDPOINT"]);
   const { S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET } = process.env;
+  const bucket = S3_BUCKET.trim();
+  const clientOptions = {
+    endpoint,
+    region: S3_REGION.trim(),
+    forcePathStyle: true,
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
+    credentials: { accessKeyId: S3_ACCESS_KEY_ID, secretAccessKey: S3_SECRET_ACCESS_KEY }
+  };
   return {
     provider: "s3",
-    bucket: S3_BUCKET.trim(),
+    bucket,
     host: parsed.host,
-    signature: ["s3", endpoint, S3_REGION.trim(), S3_ACCESS_KEY_ID, S3_BUCKET.trim()].join("|"),
-    clientOptions: {
-      endpoint,
-      region: S3_REGION.trim(),
-      forcePathStyle: true,
-      requestChecksumCalculation: "WHEN_REQUIRED",
-      responseChecksumValidation: "WHEN_REQUIRED",
-      credentials: { accessKeyId: S3_ACCESS_KEY_ID, secretAccessKey: S3_SECRET_ACCESS_KEY }
-    }
+    signature: configurationSignature("s3", bucket, clientOptions),
+    clientOptions
   };
 }
 

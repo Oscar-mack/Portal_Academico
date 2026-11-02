@@ -4,6 +4,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
 const { corsOptions } = require("./app/config/cors.config");
+const { QueryTypes } = require("sequelize");
 const db = require("./app/models");
 const pagos = require("./app/controllers/pago.controller.js");
 
@@ -46,28 +47,55 @@ const REQUIRED_TRIGGERS = [
   "asignaciones_validar_oferta_biu"
 ];
 
-async function findMissingSchema() {
+// En PostgreSQL se lee todo el catálogo necesario en pocas consultas (en lugar de una
+// describeTable por tabla) para que /ready no dependa de ~20 viajes de ida y vuelta a Neon.
+async function loadExistingColumns() {
+  const tables = Object.keys(REQUIRED_SCHEMA);
+  if (db.sequelize.getDialect() === "postgres") {
+    const rows = await db.sequelize.query(
+      `SELECT table_name, column_name FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name IN (:tables)`,
+      { replacements: { tables }, type: QueryTypes.SELECT }
+    );
+    const existing = new Map();
+    for (const { table_name: table, column_name: column } of rows) {
+      if (!existing.has(table)) existing.set(table, new Set());
+      existing.get(table).add(column);
+    }
+    return existing;
+  }
+
   const queryInterface = db.sequelize.getQueryInterface();
-  const tables = await queryInterface.showAllTables();
-  const existingTables = new Set(tables.map(table =>
+  const existingTables = new Set((await queryInterface.showAllTables()).map(table =>
     typeof table === "string" ? table : table.tableName
   ));
+  const existing = new Map();
+  for (const table of tables) {
+    if (existingTables.has(table)) {
+      existing.set(table, new Set(Object.keys(await queryInterface.describeTable(table))));
+    }
+  }
+  return existing;
+}
+
+async function findMissingSchema() {
+  const existing = await loadExistingColumns();
   const missing = [];
 
   for (const [table, columns] of Object.entries(REQUIRED_SCHEMA)) {
-    if (!existingTables.has(table)) {
+    if (!existing.has(table)) {
       missing.push(`table:${table}`);
       continue;
     }
-    const tableDescription = await queryInterface.describeTable(table);
     for (const column of columns) {
-      if (!Object.hasOwn(tableDescription, column)) missing.push(`column:${table}.${column}`);
+      if (!existing.get(table).has(column)) missing.push(`column:${table}.${column}`);
     }
   }
 
   if (db.sequelize.getDialect() === "postgres") {
-    const [triggers] = await db.sequelize.query(
-      "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal"
+    const triggers = await db.sequelize.query(
+      "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal",
+      { type: QueryTypes.SELECT }
     );
     const existingTriggers = new Set(triggers.map(trigger => trigger.tgname));
     for (const trigger of REQUIRED_TRIGGERS) {
@@ -76,6 +104,20 @@ async function findMissingSchema() {
   }
 
   return missing;
+}
+
+const readyTimeoutMs = () => Number(process.env.READY_TIMEOUT_MS || 8000);
+
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`La comprobación de readiness superó ${ms} ms.`);
+      error.name = "ReadinessTimeout";
+      reject(error);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 app.disable("x-powered-by");
@@ -107,9 +149,14 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.get("/ready", async (req, res) => {
   try {
-    await db.sequelize.query("SELECT 1");
-    const missingSchema = await findMissingSchema();
+    const missingSchema = await withTimeout((async () => {
+      await db.sequelize.query("SELECT 1");
+      return findMissingSchema();
+    })(), readyTimeoutMs());
     if (missingSchema.length > 0) {
+      // Solo nombres de objetos de esquema (sin datos ni credenciales): permite ver en los
+      // logs de Render qué migración falta cuando el health check falla.
+      console.error("Readiness: esquema incompleto.", { missingSchema });
       return res.status(503).json({
         status: "unavailable",
         checks: { database: "ok", schema: "incomplete" },

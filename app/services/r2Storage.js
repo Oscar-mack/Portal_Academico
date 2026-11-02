@@ -6,6 +6,7 @@ const {
 const { Upload } = require("@aws-sdk/lib-storage");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { createHash } = require("node:crypto");
+const supabaseStorage = require("./supabaseStorage");
 
 let client;
 let clientSignature;
@@ -122,8 +123,8 @@ function configurationSignature(provider, bucket, clientOptions) {
 function selectedProvider() {
   const raw = (process.env.STORAGE_PROVIDER || "").trim().toLowerCase();
   if (!raw) return "r2";
-  if (raw === "r2" || raw === "s3") return raw;
-  throw storageError("Proveedor de almacenamiento no válido.", "STORAGE_PROVIDER no es válido (use r2 o s3).");
+  if (raw === "r2" || raw === "s3" || raw === "supabase") return raw;
+  throw storageError("Proveedor de almacenamiento no válido.", "STORAGE_PROVIDER no es válido (use r2, s3 o supabase).");
 }
 
 function r2Configuration() {
@@ -217,10 +218,20 @@ function getClient() {
 }
 
 function ensureConfigured() {
+  if (selectedProvider() === "supabase") return supabaseStorage.ensureConfigured();
   configuration();
 }
 
+async function viaSupabase(operation, call) {
+  try {
+    return await call();
+  } catch (error) {
+    throw translateFailure(error, operation, supabaseStorage.origin());
+  }
+}
+
 async function uploadObject(key, body, contentType) {
+  if (selectedProvider() === "supabase") return viaSupabase("subida", () => supabaseStorage.uploadObject(key, body, contentType));
   const { client: s3, bucket, ...origin } = getClient();
   try {
     await new Upload({
@@ -236,6 +247,7 @@ async function uploadObject(key, body, contentType) {
 }
 
 async function removeObject(key) {
+  if (selectedProvider() === "supabase") return viaSupabase("eliminacion", () => supabaseStorage.removeObject(key));
   const { client: s3, bucket, ...origin } = getClient();
   try {
     await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
@@ -245,6 +257,7 @@ async function removeObject(key) {
 }
 
 async function createDownloadUrl(key, fileName) {
+  if (selectedProvider() === "supabase") return viaSupabase("firma", () => supabaseStorage.createDownloadUrl(key, fileName));
   const { client: s3, bucket, ...origin } = getClient();
   const safeFileName = fileName.replace(/[\r\n"]/g, "_");
   const disposition = `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`;

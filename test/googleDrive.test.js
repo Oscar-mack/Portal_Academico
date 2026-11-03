@@ -391,10 +391,30 @@ test("solo el administrador inicia la autorización y consulta el estado", async
     const admin = await login("gdadmin");
     const start = await request(app).post("/api/auth/google/iniciar").set("Authorization", `Bearer ${admin}`);
     assert.equal(start.status, 200);
-    assert.match(start.body.authorizationUrl, /^https:\/\/accounts\.google\.com\//);
-    assert.equal(start.headers["set-cookie"].length, 2);
-    assert.ok(start.headers["set-cookie"].every(cookie => cookie.includes("HttpOnly") && cookie.includes("SameSite=Lax") && cookie.includes("Secure")));
-    assert.ok(start.headers["set-cookie"].every(cookie => cookie.includes("Max-Age=1800")));
+    const launch = new URL(start.body.authorizationUrl);
+    assert.equal(launch.origin + launch.pathname, "https://portal-academico-backend-ensayo.onrender.com/api/auth/google/autorizar");
+    assert.equal(start.headers["set-cookie"], undefined);
+    assert.ok(!start.body.authorizationUrl.includes("state="));
+    const ticket = launch.searchParams.get("ticket");
+    const lanzamiento = await request(app).get("/api/auth/google/autorizar").query({ ticket });
+    assert.equal(lanzamiento.status, 303);
+    const google = new URL(lanzamiento.headers.location);
+    assert.equal(google.origin + google.pathname, "https://accounts.google.com/o/oauth2/v2/auth");
+    const cookies = lanzamiento.headers["set-cookie"];
+    assert.equal(cookies.length, 2);
+    assert.ok(cookies.every(cookie => cookie.includes("HttpOnly") && cookie.includes("SameSite=Lax") && cookie.includes("Secure") && cookie.includes("Max-Age=1800")));
+    // El ticket es de un solo uso.
+    const reused = await request(app).get("/api/auth/google/autorizar").query({ ticket });
+    assert.equal(reused.status, 303);
+    assert.match(reused.headers.location, /googleDrive=expired$/);
+    assert.equal(reused.headers["set-cookie"], undefined);
+    assert.equal((await request(app).get("/api/auth/google/autorizar").query({ ticket: "falso" })).headers["set-cookie"], undefined);
+    // Los mismos cookies devueltos por el navegador completan el callback (el estado se lee de la memoria del proceso).
+    const state = google.searchParams.get("state");
+    const callbackCookies = cookies.map(cookie => cookie.split(";")[0]).join("; ");
+    const callback = await request(app).get("/api/auth/google/callback").query({ error: "access_denied", state }).set("Cookie", callbackCookies);
+    assert.equal(callback.status, 303);
+    assert.match(callback.headers.location, /googleDrive=cancelled$/);
     assert.ok(!JSON.stringify(start.body).includes("cookieValue"));
     const status = await request(app).get("/api/auth/google/estado").set("Authorization", `Bearer ${admin}`);
     assert.equal(status.status, 200);
@@ -402,6 +422,47 @@ test("solo el administrador inicia la autorización y consulta el estado", async
     const text = JSON.stringify(status.body);
     for (const secret of [CLIENT_SECRET, REFRESH, ACCESS]) assert.ok(!text.includes(secret));
     assertNoSecrets(logs);
+  });
+});
+
+test("el ticket de lanzamiento OAuth funciona antes de 60 s y expira al cumplirlos sin poder reutilizarse", async (t) => {
+  await withDrive(() => json({}), async () => {
+    const issue = () => {
+      const flow = drive.startAuthorization(1, "admin");
+      return { flow, ticket: new URL(drive.createLaunchTicket(flow)).searchParams.get("ticket") };
+    };
+    t.mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+    try {
+      const valid = issue();
+      t.mock.timers.tick(59_999);
+      assert.equal(drive.consumeLaunchTicket(valid.ticket), valid.flow);
+      assert.equal(drive.consumeLaunchTicket(valid.ticket), null);
+
+      const atLimit = issue();
+      t.mock.timers.tick(60_000);
+      assert.equal(drive.consumeLaunchTicket(atLimit.ticket), null);
+
+      const beyond = issue();
+      t.mock.timers.tick(61_000);
+      assert.equal(drive.consumeLaunchTicket(beyond.ticket), null);
+
+      // Un ticket expirado se descarta y no vuelve a ser válido aunque el reloj retroceda.
+      const reused = issue();
+      t.mock.timers.tick(60_000);
+      assert.equal(drive.consumeLaunchTicket(reused.ticket), null);
+      t.mock.timers.setTime(1_700_000_000_000);
+      assert.equal(drive.consumeLaunchTicket(reused.ticket), null);
+
+      // Vía HTTP: un ticket vencido no fija cookies y regresa al portal como expirado.
+      const http = issue();
+      t.mock.timers.tick(60_000);
+      const response = await request(app).get("/api/auth/google/autorizar").query({ ticket: http.ticket });
+      assert.equal(response.status, 303);
+      assert.match(response.headers.location, /googleDrive=expired$/);
+      assert.equal(response.headers["set-cookie"], undefined);
+    } finally {
+      t.mock.timers.reset();
+    }
   });
 });
 

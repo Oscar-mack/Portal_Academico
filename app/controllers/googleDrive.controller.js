@@ -51,25 +51,41 @@ function clearStateCookie(res, name, secure) {
   res.append("Set-Cookie", `${name}=; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`);
 }
 
+function setFlowCookies(res, flow) {
+  const secure = new URL(process.env.GOOGLE_REDIRECT_URI).protocol === "https:";
+  for (const [name, value] of [[flow.cookieName, flow.cookieValue], [flow.adminCookieName, flow.adminCookieValue]]) {
+    res.append(
+      "Set-Cookie",
+      `${name}=${encodeURIComponent(value)}; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=${flow.expiresInSeconds}${secure ? "; Secure" : ""}`
+    );
+  }
+}
+
+// Paso 1 (fetch autenticado con Bearer): crea el flujo y devuelve una URL de lanzamiento del backend.
+// No fija cookies aquí: una respuesta fetch entre sitios no las conserva con SameSite=Lax.
 exports.start = (req, res) => {
   try {
     const flow = googleDrive.startAuthorization(req.userId, req.userRole);
-    const secure = new URL(process.env.GOOGLE_REDIRECT_URI).protocol === "https:";
-    res.append(
-      "Set-Cookie",
-      `${flow.cookieName}=${encodeURIComponent(flow.cookieValue)}; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=${flow.expiresInSeconds}${secure ? "; Secure" : ""}`
-    );
-    res.append(
-      "Set-Cookie",
-      `${flow.adminCookieName}=${encodeURIComponent(flow.adminCookieValue)}; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=${flow.expiresInSeconds}${secure ? "; Secure" : ""}`
-    );
     res.set("Cache-Control", "no-store").send({
-      authorizationUrl: flow.authorizationUrl,
+      authorizationUrl: googleDrive.createLaunchTicket(flow),
       expiresInSeconds: flow.expiresInSeconds
     });
   } catch (error) {
     fail(res, error, "autorizacion", "No fue posible iniciar la autorización de Google.");
   }
+};
+
+// Paso 2 (navegación de primer nivel del navegador): fija las cookies HttpOnly en el dominio del
+// backend y redirige a Google. El ticket es de un solo uso.
+exports.launch = (req, res) => {
+  res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+  const flow = googleDrive.consumeLaunchTicket(req.query.ticket);
+  if (!flow) {
+    if (redirectToPortal(res, "expired")) return;
+    return page(res, 400, "Autorización expirada", "La solicitud expiró. Inicia el proceso de nuevo desde el portal.");
+  }
+  setFlowCookies(res, flow);
+  res.redirect(303, flow.authorizationUrl);
 };
 
 exports.callback = async (req, res) => {

@@ -9,6 +9,7 @@ module.exports = app => {
   oauth.post("/iniciar", [verifyToken, isAdmin], drive.start);
   oauth.get("/estado", [verifyToken, isAdmin], drive.status);
   oauth.post("/carpeta", [verifyToken, isAdmin], drive.createFolder);
+  oauth.get("/autorizar", drive.launch);
   oauth.get("/callback", drive.callback);
   app.use("/api/auth/google", oauth);
 

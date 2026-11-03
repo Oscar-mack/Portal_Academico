@@ -23,6 +23,8 @@ const SAFE_TOKEN = /^[A-Za-z0-9_. -]{1,60}$/;
 const NETWORK_CODE = /^(E[A-Z0-9]{3,20}|UND_ERR_[A-Z_]{2,40}|ERR_TLS_[A-Z_]{2,40}|CERT_[A-Z_]{2,40}|DEPTH_ZERO_SELF_SIGNED_CERT|UNABLE_TO_[A-Z_]{2,40})$/;
 
 const pendingStates = new Map();
+const launchTickets = new Map();
+const LAUNCH_TTL_MS = 60 * 1000;
 let accessCache = null;
 let activeUploads = 0;
 
@@ -329,6 +331,24 @@ function startAuthorization(userId, role) {
   };
 }
 
+// Las cookies de OAuth deben fijarse en una navegación de primer nivel hacia el backend: una respuesta
+// fetch entre sitios (portal y API en dominios distintos) no puede guardar cookies SameSite=Lax.
+// El ticket de un solo uso, aleatorio y de 60 s, enlaza esa navegación con el flujo ya iniciado por el administrador.
+function createLaunchTicket(flow) {
+  const now = Date.now();
+  for (const [ticket, entry] of launchTickets) if (entry.expiresAt <= now) launchTickets.delete(ticket);
+  while (launchTickets.size >= MAX_PENDING_STATES) launchTickets.delete(launchTickets.keys().next().value);
+  const ticket = randomBytes(32).toString("base64url");
+  launchTickets.set(ticket, { flow, expiresAt: now + LAUNCH_TTL_MS });
+  return `${new URL(oauthConfiguration().redirectUri).origin}/api/auth/google/autorizar?ticket=${ticket}`;
+}
+
+function consumeLaunchTicket(ticket) {
+  const entry = typeof ticket === "string" ? launchTickets.get(ticket) : undefined;
+  if (typeof ticket === "string") launchTickets.delete(ticket);
+  return entry && entry.expiresAt > Date.now() ? entry.flow : null;
+}
+
 async function completeAuthorization({ code, state, cookieValue, adminProof }) {
   const entry = typeof state === "string" ? pendingStates.get(state) : undefined;
   if (!entry || entry.expiresAt <= Date.now() || !cookieValue ||
@@ -604,7 +624,7 @@ async function openDownload(key) {
 
 module.exports = {
   CALLBACK_PATH, SCOPE, authorizationCallbackStatus, cancelAuthorization, completeAuthorization,
-  consumeAuthorizationError, createDownloadUrl, createFolder,
+  consumeAuthorizationError, consumeLaunchTicket, createLaunchTicket, createDownloadUrl, createFolder,
   adminCookieName, ensureConfigured, MAX_CONCURRENT_UPLOADS, openDownload, origin, removeObject, resetAccessTokenCache, startAuthorization, stateCookieName,
   status, uploadObject, verifyDownloadToken
 };

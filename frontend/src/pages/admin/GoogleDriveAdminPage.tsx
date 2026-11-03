@@ -98,9 +98,13 @@ export default function GoogleDriveAdminPage({
         throw new Error("El servidor no devolvió la dirección de autorización.")
       }
       const authorizationUrl = new URL(result.authorizationUrl)
+      const apiOrigin = new URL(import.meta.env.VITE_API_URL ?? "", window.location.origin).origin
+      // El backend devuelve su propia URL de lanzamiento: así las cookies OAuth se fijan en una
+      // navegación de primer nivel hacia su dominio y luego redirige a Google.
       if (
-        authorizationUrl.origin !== "https://accounts.google.com" ||
-        authorizationUrl.pathname !== "/o/oauth2/v2/auth"
+        authorizationUrl.origin !== apiOrigin ||
+        authorizationUrl.pathname !== "/api/auth/google/autorizar" ||
+        authorizationUrl.hash
       ) {
         throw new Error("El servidor devolvió una dirección de autorización no válida.")
       }

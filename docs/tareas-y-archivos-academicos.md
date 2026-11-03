@@ -92,7 +92,8 @@ Rutas:
 
 | Ruta | Acceso | Función |
 |---|---|---|
-| `POST /api/auth/google/iniciar` | Administrador (JWT) | Devuelve `authorizationUrl` (acceso `offline`, `prompt=consent`, scope `drive.file`, PKCE y `state` aleatorio de un solo uso, 10 min). |
+| `POST /api/auth/google/iniciar` | Administrador (JWT) | Crea el flujo (`offline`, `prompt=consent`, scope `drive.file`, PKCE y `state` de un solo uso, 10 min) y devuelve `authorizationUrl`: una URL de lanzamiento del backend con ticket de un solo uso (60 s). No fija cookies. |
+| `GET /api/auth/google/autorizar?ticket=` | Ticket de un solo uso | Navegación de primer nivel: fija las cookies `HttpOnly`/`SameSite=Lax` en el dominio del backend y redirige (303) a Google. |
 | `GET /api/auth/google/callback` | Público (redirección de Google; protegido por `state`) | Canjea el código, guarda el refresh token cifrado y vuelve al portal administrativo con un resultado fijo (`authorized`, `cancelled`, `expired` o `error`), nunca con código ni detalle de Google. |
 | `GET /api/auth/google/estado` | Administrador | Indica si hay autorización y si la carpeta es accesible. |
 | `POST /api/auth/google/carpeta` | Administrador | Crea una carpeta propiedad de la app (`{"nombre"}` opcional) y la guarda como destino. |

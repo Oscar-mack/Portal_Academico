@@ -3,12 +3,14 @@
 ## Ambientes
 | Ambiente | NODE_ENV | Base de datos | Stripe | Notas |
 |---|---|---|---|---|
-| Desarrollo | development | PostgreSQL local | claves `sk_test_` | CORS abierto permitido |
+| Desarrollo | development | PostgreSQL local | claves `sk_test_` | Solo los orígenes localhost definidos por defecto o en `CORS_ORIGIN` |
 | Pruebas (CI) | test | SQLite en memoria (automático) | simulado | `npm test` |
 | Producción | production | PostgreSQL administrado | claves `sk_live_` | CORS exacto, HTTPS, secretos en el gestor del hosting |
 
 En producción `server.js` se niega a iniciar si falta `JWT_SECRET` (>=32 caracteres) o
-`CORS_ORIGIN` (distinto de `*`). Stripe es opcional para que la API académica siga
+`CORS_ORIGIN` (distinto de `*`). `CORS_ORIGIN` es una lista exacta y reemplaza los valores de desarrollo;
+no se agregan automáticamente dominios de producción. Los patrones HTTPS de Figma se rechazan salvo
+que `CORS_ALLOW_FIGMA_PREVIEWS=true` los habilite explícitamente. Stripe es opcional para que la API académica siga
 disponible: mientras falte `STRIPE_SECRET_KEY` o `STRIPE_WEBHOOK_SECRET`, Checkout
 responde `503` con las variables faltantes. Para habilitar pagos también configura
 `FRONTEND_URL` (URL HTTPS de la aplicación web, usada en los retornos de Checkout;

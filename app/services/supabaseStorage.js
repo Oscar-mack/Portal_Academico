@@ -77,17 +77,30 @@ async function readErrorSnippet(response) {
   return text.slice(0, MAX_ERROR_BODY_CHARS);
 }
 
-async function capturingFetch(input, init) {
-  const response = await fetch(input, init);
-  const context = errorContext.getStore();
-  if (context && !response.ok && !/json/i.test(response.headers.get("content-type") || "")) {
-    try {
-      context.body = await readErrorSnippet(response);
-    } catch {
-      // El diagnóstico es opcional: un fallo al leer el clon no debe afectar a la operación.
+function createStorageFetch(serviceRoleKey, fetchImpl = (...args) => globalThis.fetch(...args)) {
+  return async (input, init) => {
+    const requestHeaders = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined)
+    );
+    if (
+      serviceRoleKey.startsWith("sb_secret_") &&
+      requestHeaders.get("authorization") === `Bearer ${serviceRoleKey}`
+    ) {
+      requestHeaders.delete("authorization");
+      init = { ...init, headers: requestHeaders };
     }
-  }
-  return response;
+
+    const response = await fetchImpl(input, init);
+    const context = errorContext.getStore();
+    if (context && !response.ok && !/json/i.test(response.headers.get("content-type") || "")) {
+      try {
+        context.body = await readErrorSnippet(response);
+      } catch {
+        // El diagnóstico es opcional: un fallo al leer el clon no debe afectar a la operación.
+      }
+    }
+    return response;
+  };
 }
 
 function getClient() {
@@ -95,7 +108,7 @@ function getClient() {
   if (!client || clientSignature !== config.signature) {
     client = createClient(config.url, config.serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      global: { fetch: capturingFetch }
+      global: { fetch: createStorageFetch(config.serviceRoleKey) }
     });
     clientSignature = config.signature;
     console.log(`Almacenamiento académico: proveedor=supabase host=${config.host} bucket=${config.bucket}`);
@@ -245,4 +258,4 @@ async function createDownloadUrl(key, fileName) {
   return `${data.signedUrl}&download=${encodeURIComponent(safeFileName)}`;
 }
 
-module.exports = { createDownloadUrl, ensureConfigured, origin, removeObject, uploadObject };
+module.exports = { createDownloadUrl, createStorageFetch, ensureConfigured, origin, removeObject, uploadObject };

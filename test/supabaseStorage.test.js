@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { Readable } = require("node:stream");
 const storage = require("../app/services/r2Storage.js");
+const supabaseStorage = require("../app/services/supabaseStorage.js");
 
 const NAMES = ["STORAGE_PROVIDER", "STORAGE_DEBUG_BODY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_BUCKET",
   "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"];
@@ -9,7 +10,7 @@ const URL_BASE = "https://proyecto.supabase.co";
 const ID = "123e4567-e89b-12d3-a456-426614174000";
 let counter = 0;
 // Cada prueba usa una clave distinta para forzar un cliente nuevo con el fetch simulado.
-const secretKey = () => `service-role-canary-${++counter}-${"x".repeat(20)}`;
+const secretKey = () => `sb_secret_unit_test_${++counter}_${"x".repeat(20)}`;
 
 async function withSupabase(handler, fn, extra = {}) {
   const saved = Object.fromEntries(NAMES.map(n => [n, process.env[n]]));
@@ -52,10 +53,61 @@ test("subida: envía el archivo al bucket privado con la ruta y el tipo indicado
     assert.equal(call.method, "POST");
     assert.equal(call.url, `${URL_BASE}/storage/v1/object/portal-ensayo/materials/${ID}`);
     assert.equal(call.headers["x-upsert"], "false");
-    assert.equal(call.headers.authorization, `Bearer ${key}`);
+    assert.equal(call.headers.apikey, key);
+    assert.equal(call.headers.authorization, undefined);
     assert.match(call.body.toString("latin1"), /hola mundo/);
     assert.equal(call.headers["content-type"], "application/pdf");
   });
+});
+
+test("fetch de Storage elimina solo el Bearer que coincide exactamente con sb_secret_", async () => {
+  const key = "sb_secret_unit_test_fake";
+  let observed;
+  const fetch = supabaseStorage.createStorageFetch(key, async (input, init) => {
+    observed = new Request(input, init);
+    return new Response("ok");
+  });
+  await fetch("https://unit-test.supabase.co/storage/v1/object/bucket/key", {
+    headers: { apikey: key, authorization: `Bearer ${key}` }
+  });
+  assert.equal(observed.headers.get("apikey"), key);
+  assert.equal(observed.headers.has("authorization"), false);
+});
+
+test("fetch de Storage conserva Authorization si no coincide exactamente con la clave", async () => {
+  const key = "sb_secret_unit_test_fake";
+  for (const authorization of [
+    "Bearer another-token",
+    `bearer ${key}`,
+    `Bearer ${key}-other`,
+    "Basic dXNlcjpwYXNz"
+  ]) {
+    let observed;
+    const fetch = supabaseStorage.createStorageFetch(key, async (input, init) => {
+      observed = new Request(input, init);
+      return new Response("ok");
+    });
+    await fetch("https://unit-test.supabase.co/storage/v1/object/bucket/key", {
+      headers: { apikey: key, authorization }
+    });
+    assert.equal(observed.headers.get("apikey"), key);
+    assert.equal(observed.headers.get("authorization"), authorization);
+  }
+});
+
+test("fetch de Storage conserva Bearer para claves que no son sb_secret_", async () => {
+  const key = "legacy-service-key";
+  const authorization = `Bearer ${key}`;
+  let observed;
+  const fetch = supabaseStorage.createStorageFetch(key, async (input, init) => {
+    observed = new Request(input, init);
+    return new Response("ok");
+  });
+  await fetch("https://unit-test.supabase.co/storage/v1/object/bucket/key", {
+    headers: { apikey: key, authorization }
+  });
+  assert.equal(observed.headers.get("apikey"), key);
+  assert.equal(observed.headers.get("authorization"), authorization);
 });
 
 test("subida: acepta tasks/ y submissions/ y rechaza rutas inválidas sin llamar a la red", async () => {
@@ -248,7 +300,7 @@ test("las respuestas correctas no se leen ni se clonan", async () => {
 });
 
 test("un cuerpo de error con la clave, JWT o Authorization no aparece en los logs", async () => {
-  await withSupabase(({ headers }) => text(400, `rechazado ${headers.authorization}`), async ({ logs, key }) => {
+  await withSupabase(({ headers }) => text(400, `rechazado ${headers.apikey}`), async ({ logs, key }) => {
     await assert.rejects(storage.removeObject(`materials/${ID}`));
     const all = logs.join("\n");
     assert.ok(!all.includes(key));

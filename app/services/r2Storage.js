@@ -7,6 +7,7 @@ const { Upload } = require("@aws-sdk/lib-storage");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { createHash } = require("node:crypto");
 const supabaseStorage = require("./supabaseStorage");
+const googleDriveStorage = require("./googleDriveStorage");
 
 let client;
 let clientSignature;
@@ -117,7 +118,9 @@ function translateFailure(error, operation, { provider, host, credentialLengths 
     `${host ? ` host=${host}` : ""} status=${status ?? "n/a"} respuesta=${kind} codigo=${code ?? "n/a"}` +
     `${requestId ? ` requestId=${requestId}` : ""}${originDetail(error)}${debug}`
   );
-  const failure = new Error("El almacenamiento académico no está disponible o devolvió una respuesta inesperada.");
+  const failure = new Error(error.$gdriveReauthorizationRequired
+    ? "La autorización de Google Drive expiró o fue revocada. El administrador debe volver a autorizar Google Drive."
+    : "El almacenamiento académico no está disponible o devolvió una respuesta inesperada.");
   failure.status = 503;
   return failure;
 }
@@ -131,8 +134,8 @@ function configurationSignature(provider, bucket, clientOptions) {
 function selectedProvider() {
   const raw = (process.env.STORAGE_PROVIDER || "").trim().toLowerCase();
   if (!raw) return "r2";
-  if (raw === "r2" || raw === "s3" || raw === "supabase") return raw;
-  throw storageError("Proveedor de almacenamiento no válido.", "STORAGE_PROVIDER no es válido (use r2, s3 o supabase).");
+  if (raw === "r2" || raw === "s3" || raw === "supabase" || raw === "gdrive") return raw;
+  throw storageError("Proveedor de almacenamiento no válido.", "STORAGE_PROVIDER no es válido (use r2, s3, supabase o gdrive).");
 }
 
 function r2Configuration() {
@@ -226,7 +229,9 @@ function getClient() {
 }
 
 function ensureConfigured() {
-  if (selectedProvider() === "supabase") return supabaseStorage.ensureConfigured();
+  const provider = selectedProvider();
+  if (provider === "supabase") return supabaseStorage.ensureConfigured();
+  if (provider === "gdrive") return googleDriveStorage.ensureConfigured();
   configuration();
 }
 
@@ -238,7 +243,16 @@ async function viaSupabase(operation, call) {
   }
 }
 
+async function viaDrive(operation, call) {
+  try {
+    return await call();
+  } catch (error) {
+    throw translateFailure(error, operation, googleDriveStorage.origin());
+  }
+}
+
 async function uploadObject(key, body, contentType) {
+  if (selectedProvider() === "gdrive") return viaDrive("subida", () => googleDriveStorage.uploadObject(key, body, contentType));
   if (selectedProvider() === "supabase") return viaSupabase("subida", () => supabaseStorage.uploadObject(key, body, contentType));
   const { client: s3, bucket, ...origin } = getClient();
   try {
@@ -255,6 +269,7 @@ async function uploadObject(key, body, contentType) {
 }
 
 async function removeObject(key) {
+  if (selectedProvider() === "gdrive") return viaDrive("eliminacion", () => googleDriveStorage.removeObject(key));
   if (selectedProvider() === "supabase") return viaSupabase("eliminacion", () => supabaseStorage.removeObject(key));
   const { client: s3, bucket, ...origin } = getClient();
   try {
@@ -265,6 +280,7 @@ async function removeObject(key) {
 }
 
 async function createDownloadUrl(key, fileName) {
+  if (selectedProvider() === "gdrive") return viaDrive("firma", () => googleDriveStorage.createDownloadUrl(key, fileName));
   if (selectedProvider() === "supabase") return viaSupabase("firma", () => supabaseStorage.createDownloadUrl(key, fileName));
   const { client: s3, bucket, ...origin } = getClient();
   const safeFileName = fileName.replace(/[\r\n"]/g, "_");
@@ -284,4 +300,4 @@ async function createDownloadUrl(key, fileName) {
   }
 }
 
-module.exports = { createDownloadUrl, ensureConfigured, getClient, removeObject, uploadObject };
+module.exports = { createDownloadUrl, ensureConfigured, getClient, removeObject, translateFailure, uploadObject };

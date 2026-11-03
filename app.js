@@ -225,6 +225,7 @@ require("./app/routes/evaluacion.routes")(app);
 require("./app/routes/tarea.routes")(app);
 require("./app/routes/materialCurso.routes")(app);
 require("./app/routes/archivoAcademico.routes")(app);
+require("./app/routes/googleDrive.routes")(app);
 require("./app/routes/cargo.routes")(app);
 require("./app/routes/dashboard.routes")(app);
 require("./app/routes/requisitoSolvencia.routes")(app);

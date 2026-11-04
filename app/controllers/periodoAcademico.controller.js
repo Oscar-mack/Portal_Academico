@@ -1,4 +1,5 @@
 const db = require("../models");
+const { respondError } = require("../utils/httpErrors.js");
 
 const CicloAcademico = db.ciclosAcademicos;
 const PeriodoAcademico = db.periodosAcademicos;
@@ -34,7 +35,7 @@ exports.findAll = async (req, res) => {
     });
     res.send(periodos);
   } catch (error) {
-    res.status(500).send({ message: error.message || "Error al consultar períodos académicos." });
+    respondError(res, error, "Error al consultar períodos académicos.");
   }
 };
 

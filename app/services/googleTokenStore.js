@@ -118,6 +118,7 @@ function exportEncryptedEnvironmentValue() {
 }
 
 module.exports = {
+  MIN_KEY_LENGTH,
   encryptionKeyConfigured: () => Boolean(encryptionKey()),
   exportEncryptedEnvironmentValue,
   read,

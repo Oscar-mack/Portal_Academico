@@ -425,6 +425,288 @@ test("solo el administrador inicia la autorización y consulta el estado", async
   });
 });
 
+const traceLines = logs => logs.filter(line => line.startsWith("Google Drive OAuth:"));
+const field = (line, name) => line.match(new RegExp(`${name}=(\\S+)`))?.[1];
+
+test("el diagnóstico de configuración clasifica cada variable OAuth sin revelar valores", async () => {
+  const redirectBase = "https://portal-academico-backend-ensayo.onrender.com";
+  const cases = [
+    ["GOOGLE_CLIENT_ID", undefined, "ausente"],
+    ["GOOGLE_CLIENT_ID", "   ", "vacía"],
+    ["GOOGLE_CLIENT_ID", "id-con espacio", "contiene espacios o saltos de línea"],
+    ["GOOGLE_CLIENT_SECRET", undefined, "ausente"],
+    ["GOOGLE_CLIENT_SECRET", "", "vacía"],
+    ["GOOGLE_CLIENT_SECRET", "GOCSPX-con\nsalto", "contiene espacios o saltos de línea"],
+    ["GOOGLE_REDIRECT_URI", undefined, "ausente"],
+    ["GOOGLE_REDIRECT_URI", "", "vacía"],
+    ["GOOGLE_REDIRECT_URI", `${redirectBase}/api/auth/google/ callback`, "contiene espacios o saltos de línea"],
+    ["GOOGLE_REDIRECT_URI", "esto-no-es-una-url", "formato de URL inválido"],
+    ["GOOGLE_REDIRECT_URI", "http://portal-academico-backend-ensayo.onrender.com/api/auth/google/callback", "protocolo no permitido"],
+    ["GOOGLE_REDIRECT_URI", "https://usuario:clave-secreta@portal-academico-backend-ensayo.onrender.com/api/auth/google/callback", "no debe incluir credenciales"],
+    ["GOOGLE_REDIRECT_URI", `${redirectBase}/api/auth/google/callback?code=codigo-secreto`, "no debe incluir parámetros ni fragmento"],
+    ["GOOGLE_REDIRECT_URI", `${redirectBase}/api/auth/google/callback/`, "la ruta debe ser exactamente /api/auth/google/callback"],
+    ["GOOGLE_REDIRECT_URI", `${redirectBase}/`, "la ruta debe ser exactamente /api/auth/google/callback"]
+  ];
+  for (const [name, value, reason] of cases) {
+    await withDrive(() => json({}), async ({ logs }) => {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      assert.throws(() => drive.ensureConfigured(), error => error.status === 503 && error.message === "El almacenamiento académico no está configurado.");
+      const text = logs.join("\n");
+      assert.ok(text.includes(`${name} (${reason}`), `${name}: ${reason}`);
+      for (const other of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI", "GOOGLE_TOKEN_ENCRYPTION_KEY"].filter(n => n !== name)) {
+        assert.ok(!text.includes(other), `${other} no debe mencionarse`);
+      }
+      for (const leaked of ["clave-secreta", "codigo-secreto", "id-con", "GOCSPX-con"]) assert.ok(!text.includes(leaked));
+      assertNoSecrets(logs);
+    });
+  }
+  await withDrive(() => json({}), async ({ logs }) => {
+    for (const name of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"]) delete process.env[name];
+    assert.throws(() => drive.ensureConfigured(), { status: 503 });
+    assert.match(logs.join("\n"), /GOOGLE_CLIENT_ID \(ausente\), GOOGLE_CLIENT_SECRET \(ausente\), GOOGLE_REDIRECT_URI \(ausente\)/);
+  });
+});
+
+test("la clave de cifrado se diagnostica por separado de las credenciales OAuth", async () => {
+  for (const [value, reason] of [[undefined, "ausente"], ["  ", "vacía"], ["corta", "demasiado corta (mínimo 32 caracteres)"]]) {
+    await withDrive(() => json({}), async ({ logs }) => {
+      if (value === undefined) delete process.env.GOOGLE_TOKEN_ENCRYPTION_KEY; else process.env.GOOGLE_TOKEN_ENCRYPTION_KEY = value;
+      assert.throws(() => drive.ensureConfigured(), { status: 503 });
+      assert.throws(() => drive.startAuthorization(1, "admin"), { status: 503 });
+      const text = logs.join("\n");
+      assert.ok(text.includes(`GOOGLE_TOKEN_ENCRYPTION_KEY (${reason})`));
+      assert.ok(!/GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|GOOGLE_REDIRECT_URI/.test(text));
+      assertNoSecrets(logs);
+    });
+  }
+});
+
+test("el flujo OAuth válido se traza con un identificador correlacionable y sin datos sensibles", async () => {
+  const authorizationCode = "codigo-de-autorizacion-sensible";
+  await withDrive(() => json({ refresh_token: REFRESH, access_token: ACCESS, scope: drive.SCOPE }), async ({ logs, calls }) => {
+    fs.rmSync(tokenStore.storePath());
+    const admin = await login("gdadmin");
+    const start = await request(app).post("/api/auth/google/iniciar").set("Authorization", `Bearer ${admin}`);
+    assert.equal(start.status, 200);
+    const ticket = new URL(start.body.authorizationUrl).searchParams.get("ticket");
+    const launch = await request(app).get("/api/auth/google/autorizar").query({ ticket });
+    assert.equal(launch.status, 303);
+    const state = new URL(launch.headers.location).searchParams.get("state");
+    const cookies = launch.headers["set-cookie"].map(cookie => cookie.split(";")[0]);
+    const callback = await request(app).get("/api/auth/google/callback").query({ code: authorizationCode, state }).set("Cookie", cookies.join("; "));
+    assert.equal(callback.status, 303);
+    assert.match(callback.headers.location, /googleDrive=authorized$/);
+
+    const lines = traceLines(logs);
+    const stages = lines.map(line => field(line, "etapa"));
+    assert.deepEqual(stages, [
+      "inicio", "ticket_creacion", "ticket_consumo", "cookies_emision", "callback_google",
+      "validacion_cookie", "validacion_state", "validacion_admin", "intercambio_codigo", "refresh_token",
+      "almacenamiento_token", "retorno_portal"
+    ]);
+    assert.ok(lines.every(line => field(line, "resultado") === "ok"));
+    const flow = drive.flowId(state);
+    assert.match(flow, /^[0-9a-f]{12}$/);
+    assert.ok(lines.every(line => field(line, "flujo") === flow));
+    assert.notEqual(flow, state.slice(0, 12));
+    const exchange = calls.find(call => call.body?.get?.("grant_type") === "authorization_code");
+    assert.ok(exchange);
+    assertNoSecrets(logs, [
+      authorizationCode, state, ticket, cookies[0].split("=")[1], cookies[1].split("=")[1],
+      exchange.body.get("code_verifier"), admin
+    ]);
+    assert.equal(tokenStore.read().refreshToken, REFRESH);
+  });
+});
+
+test("los rechazos de validación del callback se clasifican y comparten identificador de flujo", async (t) => {
+  await withDrive(() => json({ refresh_token: REFRESH, scope: drive.SCOPE }), async ({ logs }) => {
+    const flow = drive.startAuthorization(1, "admin");
+    const state = new URL(flow.authorizationUrl).searchParams.get("state");
+    const missing = await callbackRequest({ code: "codigo-sensible", state }, flow, false);
+    assert.equal(missing.status, 400);
+    const forged = await request(app).get("/api/auth/google/callback").query({ code: "codigo-sensible", state: "inventado" });
+    assert.equal(forged.status, 400);
+    const text = logs.join("\n");
+    assert.match(text, new RegExp(`etapa=validacion_cookie resultado=rechazado flujo=${drive.flowId(state)} motivo=ausente`));
+    assert.match(text, new RegExp(`etapa=validacion_admin resultado=rechazado flujo=${drive.flowId(state)} motivo=ausente`));
+    assert.match(text, /etapa=validacion_state resultado=rechazado flujo=\w+ motivo=formato_invalido/);
+    assert.ok(!text.includes(state) && !text.includes("codigo-sensible"));
+
+    const other = drive.startAuthorization(1, "admin");
+    const otherState = new URL(other.authorizationUrl).searchParams.get("state");
+    t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      t.mock.timers.tick(11 * 60 * 1000);
+      const expired = await callbackRequest({ code: "x", state: otherState }, other);
+      assert.equal(expired.status, 303);
+      assert.match(expired.headers.location, /googleDrive=expired$/);
+    } finally {
+      t.mock.timers.reset();
+    }
+    assert.match(logs.join("\n"), new RegExp(`etapa=validacion_state resultado=rechazado flujo=${drive.flowId(otherState)} motivo=expirado`));
+    assertNoSecrets(logs, [otherState, other.cookieValue, other.adminCookieValue]);
+
+    assert.equal(drive.consumeLaunchTicket("ticket-inventado"), null);
+    assert.equal(drive.consumeLaunchTicket(undefined), null);
+    assert.match(logs.join("\n"), /etapa=ticket_consumo resultado=rechazado flujo=sin_flujo motivo=desconocido_usado_o_reiniciado/);
+    assert.match(logs.join("\n"), /etapa=ticket_consumo resultado=rechazado flujo=sin_flujo motivo=ausente/);
+  });
+});
+
+test("los errores de Google al canjear el código se registran solo con estado HTTP y código clasificado", async () => {
+  for (const [response, expected] of [
+    [() => json({ error: "invalid_grant", error_description: `${REFRESH} ${CLIENT_SECRET}` }, 400), /resultado=error .*motivo=respuesta_http_de_google status=400 codigo=invalid_grant/],
+    [() => json({ error: "invalid_client", error_description: ACCESS }, 401), /motivo=respuesta_http_de_google status=401 codigo=invalid_client/],
+    [() => json({ error: "redirect_uri_mismatch" }, 400), /status=400 codigo=redirect_uri_mismatch/],
+    [() => { throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(`https://x?access_token=${ACCESS}`), { code: "ENOTFOUND" }) }); }, /motivo=fallo_de_red codigo=ENOTFOUND/]
+  ]) {
+    await withDrive(response, async ({ logs }) => {
+      fs.rmSync(tokenStore.storePath());
+      const flow = drive.startAuthorization(1, "admin");
+      const state = new URL(flow.authorizationUrl).searchParams.get("state");
+      const res = await callbackRequest({ code: "codigo-sensible", state }, flow);
+      assert.equal(res.status, 303);
+      assert.match(res.headers.location, /googleDrive=error$/);
+      const exchange = traceLines(logs).find(line => field(line, "etapa") === "intercambio_codigo");
+      assert.match(exchange, expected);
+      assert.equal(field(exchange, "flujo"), drive.flowId(state));
+      assert.ok(traceLines(logs).some(line => field(line, "etapa") === "retorno_portal" && field(line, "resultado") === "rechazado"));
+      assertNoSecrets(logs, ["codigo-sensible", state, flow.cookieValue, flow.adminCookieValue, "error_description"]);
+    });
+  }
+});
+
+test("el intercambio del código reconoce solo códigos de una lista cerrada y el resto se registra como otro", async () => {
+  const exchange = async (body, status) => {
+    let line;
+    await withDrive(() => json(body, status), async ({ logs }) => {
+      fs.rmSync(tokenStore.storePath());
+      const flow = drive.startAuthorization(1, "admin");
+      const state = new URL(flow.authorizationUrl).searchParams.get("state");
+      const res = await callbackRequest({ code: "codigo-sensible", state }, flow);
+      assert.equal(res.status, 303);
+      assert.match(res.headers.location, /googleDrive=error$/);
+      line = traceLines(logs).find(entry => field(entry, "etapa") === "intercambio_codigo");
+      const text = logs.join("\n");
+      assertNoSecrets(logs, ["codigo-sensible", state, flow.cookieValue, flow.adminCookieValue]);
+      line = { line, text };
+    });
+    return line;
+  };
+
+  for (const code of ["invalid_grant", "invalid_client", "redirect_uri_mismatch", "invalid_request", "unauthorized_client"]) {
+    const { line, text } = await exchange({ error: code }, 400);
+    assert.equal(field(line, "codigo"), code);
+    assert.match(text, new RegExp(`status=400 respuesta=json codigo=${code}`));
+  }
+
+  const hostile = [
+    "codigo_desconocido",
+    "a".repeat(500),
+    "con espacios y\nsalto de línea",
+    `${REFRESH}`,
+    `${CLIENT_SECRET}`,
+    "ya29.token-largo-de-ejemplo",
+    "ESECRETO",
+    "<script>alert(1)</script>",
+    "invalid_grant extra",
+    "INVALID_GRANT"
+  ];
+  for (const value of hostile) {
+    const { line, text } = await exchange({ error: value, error_description: `${ACCESS} ${CLIENT_SECRET}` }, 400);
+    assert.equal(field(line, "codigo"), "otro", JSON.stringify(value.slice(0, 20)));
+    assert.match(text, /status=400 respuesta=json codigo=otro/);
+    assert.ok(!text.includes(value), "el valor inesperado no debe llegar a los logs");
+    assert.ok(!text.includes("error_description"));
+  }
+
+  for (const empty of ["", "   "]) {
+    const { line } = await exchange({ error: empty }, 400);
+    assert.equal(field(line, "codigo"), "otro");
+  }
+  // Sin campo de error: no se inventa un código.
+  const { line: none } = await exchange({}, 500);
+  assert.equal(field(none, "codigo"), undefined);
+});
+
+test("los códigos del callback y de red también pasan por la lista cerrada", async () => {
+  await withDrive(() => json({}), async ({ logs }) => {
+    for (const googleError of ["invalid_scope", "access_denied", "algo_inesperado", "ESECRETO", "a".repeat(40)]) {
+      const flow = drive.startAuthorization(1, "admin");
+      const state = new URL(flow.authorizationUrl).searchParams.get("state");
+      await callbackRequest({ error: googleError, state }, flow);
+    }
+    const codes = traceLines(logs).filter(entry => field(entry, "etapa") === "callback_google" && field(entry, "resultado") === "rechazado")
+      .map(entry => field(entry, "codigo"));
+    assert.deepEqual(codes, ["invalid_scope", "access_denied", "otro", "otro", "otro"]);
+    const text = logs.join("\n");
+    assert.ok(!text.includes("algo_inesperado") && !text.includes("ESECRETO"));
+  });
+  for (const [code, expected] of [["ENOTFOUND", "ENOTFOUND"], ["ESECRETO", undefined]]) {
+    await withDrive(() => { throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("x"), { code }) }); }, async ({ logs }) => {
+      fs.rmSync(tokenStore.storePath());
+      const flow = drive.startAuthorization(1, "admin");
+      const state = new URL(flow.authorizationUrl).searchParams.get("state");
+      await callbackRequest({ code: "x", state }, flow);
+      const line = traceLines(logs).find(entry => field(entry, "etapa") === "intercambio_codigo");
+      assert.equal(field(line, "codigo"), expected ?? "TypeError");
+      assert.ok(!logs.join("\n").includes("ESECRETO"));
+    });
+  }
+});
+
+test("los fallos de refresh token, cifrado y almacenamiento se clasifican sin filtrar datos", async () => {
+  await withDrive(() => json({ access_token: ACCESS, scope: "email" }), async ({ logs }) => {
+    const flow = drive.startAuthorization(1, "admin");
+    const state = new URL(flow.authorizationUrl).searchParams.get("state");
+    await callbackRequest({ code: "x", state }, flow);
+    assert.match(logs.join("\n"), /etapa=refresh_token resultado=rechazado .*motivo=scope_drive_file_no_concedido/);
+    assertNoSecrets(logs);
+  });
+  await withDrive(() => json({ access_token: ACCESS, scope: drive.SCOPE }), async ({ logs }) => {
+    const flow = drive.startAuthorization(1, "admin");
+    const state = new URL(flow.authorizationUrl).searchParams.get("state");
+    await callbackRequest({ code: "x", state }, flow);
+    assert.match(logs.join("\n"), /etapa=refresh_token resultado=rechazado .*motivo=google_no_devolvio_refresh_token/);
+    assertNoSecrets(logs);
+  });
+  await withDrive(() => json({ refresh_token: REFRESH, scope: drive.SCOPE }), async ({ logs, dir }) => {
+    const flow = drive.startAuthorization(1, "admin");
+    const state = new URL(flow.authorizationUrl).searchParams.get("state");
+    process.env.GOOGLE_TOKEN_STORE_PATH = path.join(dir, "token.enc", "no", "existe");
+    const res = await callbackRequest({ code: "x", state }, flow);
+    assert.match(res.headers.location, /googleDrive=error$/);
+    assert.match(logs.join("\n"), new RegExp(`etapa=almacenamiento_token resultado=error flujo=${drive.flowId(state)} motivo=fallo_de_cifrado_o_escritura codigo=\\w+`));
+    assertNoSecrets(logs, [dir]);
+  });
+  await withDrive(() => json({ refresh_token: REFRESH, scope: drive.SCOPE }), async ({ logs }) => {
+    const flow = drive.startAuthorization(1, "admin");
+    const state = new URL(flow.authorizationUrl).searchParams.get("state");
+    process.env.GOOGLE_REFRESH_TOKEN_ENC = tokenStore.exportEncryptedEnvironmentValue();
+    const res = await callbackRequest({ code: "x", state }, flow);
+    assert.match(res.headers.location, /googleDrive=error$/);
+    assert.match(logs.join("\n"), /etapa=almacenamiento_token resultado=error .*motivo=almacen_de_solo_lectura_por_entorno codigo=TOKEN_STORE_ENV_CONFIGURED/);
+    assertNoSecrets(logs, [process.env.GOOGLE_REFRESH_TOKEN_ENC]);
+  });
+});
+
+test("un error de Google en el callback se registra con un código acotado, sin parámetros arbitrarios", async () => {
+  await withDrive(() => json({}), async ({ logs }) => {
+    for (const googleError of ["access_denied", "invalid_scope", "texto con espacios y <script>"]) {
+      const flow = drive.startAuthorization(1, "admin");
+      const state = new URL(flow.authorizationUrl).searchParams.get("state");
+      const res = await callbackRequest({ error: googleError, state }, flow);
+      assert.equal(res.status, 303);
+    }
+    const text = logs.join("\n");
+    assert.match(text, /etapa=callback_google resultado=rechazado .*motivo=acceso_denegado_por_usuario codigo=access_denied/);
+    assert.match(text, /motivo=error_de_google codigo=invalid_scope/);
+    assert.match(text, /motivo=error_de_google codigo=otro/);
+    assert.ok(!text.includes("<script>"));
+  });
+});
+
 test("el ticket de lanzamiento OAuth funciona antes de 60 s y expira al cumplirlos sin poder reutilizarse", async (t) => {
   await withDrive(() => json({}), async () => {
     const issue = () => {

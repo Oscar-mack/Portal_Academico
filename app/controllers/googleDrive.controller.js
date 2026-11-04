@@ -85,12 +85,19 @@ exports.launch = (req, res) => {
     return page(res, 400, "Autorización expirada", "La solicitud expiró. Inicia el proceso de nuevo desde el portal.");
   }
   setFlowCookies(res, flow);
+  googleDrive.trace("cookies_emision", "ok", { flow: flow.flowId });
   res.redirect(303, flow.authorizationUrl);
 };
 
 exports.callback = async (req, res) => {
   const { code, state, error } = req.query;
   res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+  const flow = googleDrive.flowId(state);
+  googleDrive.trace("callback_google", "ok", {
+    flow,
+    reason: error !== undefined ? "con_error_de_google" : typeof code === "string" && code ? "con_codigo" : "sin_codigo",
+    code: typeof error === "string" && /^[a-z_]{1,40}$/.test(error) ? error : undefined
+  });
   const cookieName = typeof state === "string" ? googleDrive.stateCookieName(state) : "";
   const adminCookieName = typeof state === "string" ? googleDrive.adminCookieName(state) : "";
   const secure = (() => {
@@ -127,10 +134,12 @@ exports.callback = async (req, res) => {
   }
   try {
     await googleDrive.completeAuthorization({ code, state, cookieValue: value, adminProof });
+    googleDrive.trace("retorno_portal", "ok", { flow, reason: "authorized" });
     if (redirectToPortal(res, "authorized")) return;
     page(res, 200, "Google Drive autorizado", "La cuenta quedó autorizada. Puedes cerrar esta ventana.");
   } catch (failure) {
     storage.translateFailure(failure, "autorizacion", googleDrive.origin());
+    googleDrive.trace("retorno_portal", "rechazado", { flow, reason: "error" });
     if (redirectToPortal(res, "error")) return;
     page(res, 400, "No se pudo completar la autorización", "Google no pudo completar la autorización. Inicia el proceso de nuevo.");
   }

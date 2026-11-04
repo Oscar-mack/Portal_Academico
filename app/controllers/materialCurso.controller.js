@@ -4,6 +4,7 @@ const db = require("../models");
 const ROLES = require("../config/roles.js");
 const storage = require("../services/r2Storage.js");
 const { uploadMultipart } = require("../utils/academicFileUpload.js");
+const { respondError } = require("../utils/httpErrors.js");
 
 const Material = db.materialesCurso;
 
@@ -101,7 +102,7 @@ exports.findAll = async (req, res) => {
       return item;
     }));
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar materiales." });
+    respondError(res, error, "Error al consultar materiales.");
   }
 };
 
@@ -152,7 +153,7 @@ exports.create = async (req, res) => {
   } catch (error) {
     if (transaction && !transaction.finished) await transaction.rollback();
     await storage.removeObject(key).catch(() => {});
-    res.status(error.status || 500).send({ message: error.message || "Error al publicar el material." });
+    respondError(res, error, "Error al publicar el material.");
   }
 };
 
@@ -175,6 +176,6 @@ exports.deactivate = async (req, res) => {
     });
     res.send({ message: "Material desactivado.", id: material.id });
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al desactivar material." });
+    respondError(res, error, "Error al desactivar material.");
   }
 };

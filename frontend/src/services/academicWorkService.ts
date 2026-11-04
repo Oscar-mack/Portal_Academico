@@ -94,6 +94,11 @@ export const academicWorkService = {
     const result = await apiRequest<{ url: string }>(
       `/api/archivos-academicos/${id}/descarga`,
     )
-    window.location.assign(result.url)
+    const anchor = document.createElement("a")
+    anchor.href = result.url
+    anchor.rel = "noopener"
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
   },
 }

@@ -174,6 +174,8 @@ test("flujo docente → almacenamiento → asignatura → alumno visualiza y des
   const created = await publish(ctx.tokens.docente);
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.equal(objects.size, before + 1);
+  assert.equal((await request(app).delete(`/api/materiales/${created.body.id}`)
+    .set(auth(ctx.tokens.docenteajeno))).status, 403, "otro docente no puede desactivar el material");
   const row = await db.materialesCurso.findByPk(created.body.id, { include: [{ model: db.archivosAcademicos, as: "archivo" }] });
   assert.equal(row.cursoId, ctx.curso);
   assert.equal(row.periodoAcademicoId, ctx.periodo);
@@ -181,6 +183,8 @@ test("flujo docente → almacenamiento → asignatura → alumno visualiza y des
 
   const visible = await request(app).get(`/api/materiales?periodoAcademicoId=${ctx.periodo}`).set(auth(ctx.tokens.alumno1));
   assert.deepEqual(visible.body.map(m => m.titulo), ["Guía"]);
+  assert.equal(visible.body[0].archivo.nombreOriginal, "guia.pdf");
+  assert.ok(visible.body[0].createdAt);
   assert.equal("storageKey" in visible.body[0].archivo, false);
   const download = await request(app).get(`/api/archivos-academicos/${created.body.archivo.id}/descarga`).set(auth(ctx.tokens.alumno1));
   assert.equal(download.status, 200);
@@ -192,10 +196,51 @@ test("flujo docente → almacenamiento → asignatura → alumno visualiza y des
   assert.equal((await request(app).get(`/api/archivos-academicos/${created.body.archivo.id}/descarga`).set(auth(ctx.tokens.docenteajeno))).status, 403);
   assert.equal((await request(app).get(`/api/archivos-academicos/${created.body.archivo.id}/descarga`)).status, 403, "sin token");
 
+  const updated = await request(app).put(`/api/materiales/${created.body.id}`)
+    .set(auth(ctx.tokens.docente)).send({ titulo: "Guía actualizada", descripcion: "Revisada" });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.equal(updated.body.titulo, "Guía actualizada");
+  assert.equal(updated.body.archivoId, created.body.archivo.id, "editar metadatos conserva el archivo asociado");
+  assert.equal((await request(app).put(`/api/materiales/${created.body.id}`)
+    .set(auth(ctx.tokens.docenteajeno)).send({ titulo: "Intrusión" })).status, 403);
+  assert.equal((await request(app).put(`/api/materiales/${created.body.id}`)
+    .set(auth(ctx.tokens.docente)).send({ titulo: "Inválido", archivoId: 99 })).status, 400);
+  const updatedVisible = await request(app).get(`/api/materiales?cursoId=${ctx.curso}&periodoAcademicoId=${ctx.periodo}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(updatedVisible.body[0].titulo, "Guía actualizada");
+  assert.equal((await request(app).get(`/api/materiales?cursoId=${ctx.otroCurso}&periodoAcademicoId=${ctx.periodo}`)
+    .set(auth(ctx.tokens.alumno1))).body.length, 0);
+
   const removed = await request(app).delete(`/api/materiales/${created.body.id}`).set(auth(ctx.tokens.docente));
   assert.equal(removed.status, 200);
   assert.deepEqual((await request(app).get(`/api/materiales?periodoAcademicoId=${ctx.periodo}`).set(auth(ctx.tokens.alumno1))).body, []);
   assert.equal((await request(app).get(`/api/archivos-academicos/${created.body.archivo.id}/descarga`).set(auth(ctx.tokens.alumno1))).status, 404);
+});
+
+test("descarga de material: archivo inexistente y firma del almacenamiento fallida", async () => {
+  const missing = await request(app).get("/api/archivos-academicos/999999/descarga")
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(missing.status, 404);
+  assert.match(missing.body.message, /Archivo no encontrado/);
+
+  const created = await request(app)
+    .post(`/api/materiales/cursos/${ctx.curso}?periodoAcademicoId=${ctx.periodo}`)
+    .set(auth(ctx.tokens.docente))
+    .field("titulo", "Material descarga")
+    .attach("file", pdf(), { filename: "descarga.pdf", contentType: "application/pdf" });
+  assert.equal(created.status, 201);
+  const makeUrl = storage.createDownloadUrl;
+  storage.createDownloadUrl = async () => {
+    throw Object.assign(new Error("El almacenamiento académico no está disponible o devolvió una respuesta inesperada."), { status: 503 });
+  };
+  try {
+    const failed = await request(app).get(`/api/archivos-academicos/${created.body.archivo.id}/descarga`)
+      .set(auth(ctx.tokens.alumno1));
+    assert.equal(failed.status, 503);
+    assert.doesNotMatch(JSON.stringify(failed.body), /secret|unreachable/);
+  } finally {
+    storage.createDownloadUrl = makeUrl;
+  }
 });
 
 test("material con almacenamiento caído responde 503 y no deja registros huérfanos", async () => {
@@ -215,6 +260,28 @@ test("material con almacenamiento caído responde 503 y no deja registros huérf
     storage.uploadObject = upload;
   }
   assert.equal(await db.archivosAcademicos.count(), files);
+});
+
+test("fallo al asociar un material revierte PostgreSQL y elimina el objeto subido", async () => {
+  const uploadedBefore = objects.size;
+  const filesBefore = await db.archivosAcademicos.count();
+  const materialsBefore = await db.materialesCurso.count();
+  const originalCreate = db.materialesCurso.create;
+  db.materialesCurso.create = async () => { throw new Error("database write failed"); };
+  try {
+    const res = await request(app)
+      .post(`/api/materiales/cursos/${ctx.curso}?periodoAcademicoId=${ctx.periodo}`)
+      .set(auth(ctx.tokens.docente))
+      .field("titulo", "Asociación fallida")
+      .attach("file", pdf(), { filename: "rollback.pdf", contentType: "application/pdf" });
+    assert.equal(res.status, 500);
+    assert.doesNotMatch(JSON.stringify(res.body), /database write failed/);
+  } finally {
+    db.materialesCurso.create = originalCreate;
+  }
+  assert.equal(await db.archivosAcademicos.count(), filesBefore);
+  assert.equal(await db.materialesCurso.count(), materialsBefore);
+  assert.equal(objects.size, uploadedBefore);
 });
 
 test("caída de PostgreSQL durante la entrega responde 503 seguro sin filtrar detalles", async () => {

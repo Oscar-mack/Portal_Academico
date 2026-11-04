@@ -46,6 +46,7 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [submissions, setSubmissions] = useState<TaskSubmission[]>([])
   const [busyAction, setBusyAction] = useState<number | null>(null)
+  const [editingMaterialId, setEditingMaterialId] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -224,6 +225,26 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
       await load()
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "No fue posible desactivar el material.")
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function updateMaterial(event: FormEvent<HTMLFormElement>, material: CourseMaterial) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    setBusyAction(material.id)
+    setError("")
+    try {
+      await academicWorkService.updateMaterial(material.id, {
+        titulo: String(form.get("titulo") ?? ""),
+        descripcion: String(form.get("descripcion") ?? ""),
+      })
+      setEditingMaterialId(null)
+      setNotice("El material se actualizó correctamente.")
+      await load()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "No fue posible editar el material.")
     } finally {
       setBusyAction(null)
     }
@@ -439,10 +460,31 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
                 <article className="rounded-2xl border border-line bg-white p-4" key={material.id}>
                   <p className="text-xs font-bold uppercase text-brand-soft">{material.curso?.codigo} · {material.curso?.nombre} · {material.periodoAcademico?.nombre}</p>
                   <h3 className="mt-1 font-bold">{material.titulo}</h3>
+                  <p className="mt-1 text-xs text-muted">Publicado: {new Date(material.createdAt).toLocaleString()}</p>
                   {material.descripcion && <p className="mt-1 text-sm text-muted">{material.descripcion}</p>}
+                  <p className="mt-2 text-xs text-muted">Archivo: {material.archivo.nombreOriginal}</p>
+                  {canManage && editingMaterialId === material.id && (
+                    <form className="mt-3 grid gap-2" onSubmit={(event) => updateMaterial(event, material)}>
+                      <label className="text-xs font-semibold">
+                        Título
+                        <input className="mt-1 h-10 w-full rounded-lg border border-line px-3" defaultValue={material.titulo} maxLength={150} name="titulo" required />
+                      </label>
+                      <label className="text-xs font-semibold">
+                        Descripción
+                        <textarea className="mt-1 w-full rounded-lg border border-line px-3 py-2" defaultValue={material.descripcion} maxLength={2000} name="descripcion" rows={3} />
+                      </label>
+                      <div className="flex gap-2">
+                        <button className="rounded-lg bg-brand px-3 py-2 text-xs font-bold text-white disabled:opacity-50" disabled={busyAction === material.id} type="submit">Guardar</button>
+                        <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold" disabled={busyAction === material.id} onClick={() => setEditingMaterialId(null)} type="button">Cancelar</button>
+                      </div>
+                    </form>
+                  )}
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold text-brand-soft" onClick={() => downloadFile(material.archivo.id)} type="button">Descargar {material.archivo.nombreOriginal}</button>
-                    {canManage && <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold" disabled={busyAction === material.id} onClick={() => deactivateMaterial(material)} type="button">Desactivar</button>}
+                    {canManage && editingMaterialId !== material.id && <>
+                      <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold" disabled={busyAction === material.id} onClick={() => setEditingMaterialId(material.id)} type="button">Editar</button>
+                      <button className="rounded-lg border border-line px-3 py-2 text-xs font-bold" disabled={busyAction === material.id} onClick={() => deactivateMaterial(material)} type="button">Desactivar</button>
+                    </>}
                   </div>
                 </article>
               ))}

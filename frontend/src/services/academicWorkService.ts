@@ -38,6 +38,7 @@ export interface CourseMaterial {
   titulo: string
   descripcion: string
   activo: boolean
+  createdAt: string
   curso?: { id: number; nombre: string; codigo: string }
   periodoAcademico?: { id: number; nombre: string }
   archivo: AcademicFile
@@ -86,6 +87,11 @@ export const academicWorkService = {
       }),
       { method: "POST", body: data },
     ),
+  updateMaterial: (id: number, input: { titulo?: string; descripcion?: string }) =>
+    apiRequest<CourseMaterial>(`/api/materiales/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
   deactivateMaterial: (id: number) =>
     apiRequest<{ message: string }>(`/api/materiales/${id}`, {
       method: "DELETE",

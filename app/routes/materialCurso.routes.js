@@ -6,6 +6,7 @@ module.exports = app => {
   const router = require("express").Router();
   router.get("/", [verifyToken, hasRole(ROLES.ADMIN, ROLES.CATEDRATICO, ROLES.ALUMNO)], materiales.findAll);
   router.post("/cursos/:cursoId", [verifyToken, hasRole(ROLES.CATEDRATICO)], materiales.create);
+  router.put("/:id", [verifyToken, hasRole(ROLES.CATEDRATICO)], materiales.update);
   router.delete("/:id", [verifyToken, hasRole(ROLES.CATEDRATICO)], materiales.deactivate);
   app.use("/api/materiales", router);
 };

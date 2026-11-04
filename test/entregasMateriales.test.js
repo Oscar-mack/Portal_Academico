@@ -258,3 +258,26 @@ test("inscripción: sin secciones ofertadas responde lista vacía y el alumno si
   assert.equal((await request(app).get(`/api/ofertas-curso/disponibles?periodoAcademicoId=${ctx.periodo}`).set(auth(ctx.tokens.docente))).status, 403);
   assert.equal((await request(app).get("/api/ofertas-curso/disponibles").set(auth(ctx.tokens.alumno1))).status, 400);
 });
+
+test("rutas de lectura: PostgreSQL caído responde 503 seguro y errores inesperados 500 genérico", async () => {
+  const spy = console.error;
+  console.error = () => {};
+  const original = db.tareas.findAll;
+  try {
+    db.tareas.findAll = async () => {
+      throw Object.assign(new Error("connect ECONNREFUSED 10.0.0.1:5432"), { name: "SequelizeConnectionRefusedError" });
+    };
+    const down = await request(app).get("/api/tareas").set(auth(ctx.tokens.alumno1));
+    assert.equal(down.status, 503);
+    assert.doesNotMatch(JSON.stringify(down.body), /10\.0\.0\.1|ECONNREFUSED/);
+    db.tareas.findAll = async () => { throw new Error("relation \"tareas\" column secret_x"); };
+    const bad = await request(app).get("/api/tareas").set(auth(ctx.tokens.alumno1));
+    assert.equal(bad.status, 500);
+    assert.doesNotMatch(JSON.stringify(bad.body), /secret_x|relation/);
+  } finally {
+    db.tareas.findAll = original;
+    console.error = spy;
+  }
+  const found = await request(app).get("/api/tareas/999999").set(auth(ctx.tokens.docente));
+  assert.equal(found.status, 404, "los errores con estado explícito se conservan");
+});

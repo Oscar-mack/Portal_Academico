@@ -102,7 +102,7 @@ exports.findAll = async (req, res) => {
       return item;
     }));
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar materiales." });
+    respondError(res, error, "Error al consultar materiales.");
   }
 };
 
@@ -176,6 +176,6 @@ exports.deactivate = async (req, res) => {
     });
     res.send({ message: "Material desactivado.", id: material.id });
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al desactivar material." });
+    respondError(res, error, "Error al desactivar material.");
   }
 };

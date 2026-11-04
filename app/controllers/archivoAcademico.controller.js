@@ -1,6 +1,7 @@
 const db = require("../models");
 const ROLES = require("../config/roles.js");
 const storage = require("../services/r2Storage.js");
+const { respondError } = require("../utils/httpErrors.js");
 
 async function teacherCanAccess(teacherUserId, cursoId, periodoAcademicoId) {
   const teacher = await db.catedraticos.findOne({
@@ -88,6 +89,6 @@ exports.download = async (req, res) => {
     const url = await storage.createDownloadUrl(file.storageKey, file.nombreOriginal);
     res.send({ url, expiresInSeconds: 60 });
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "No fue posible preparar la descarga." });
+    respondError(res, error, "No fue posible preparar la descarga.");
   }
 };

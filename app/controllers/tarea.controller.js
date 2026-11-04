@@ -268,7 +268,7 @@ exports.findAll = async (req, res) => {
     }
     res.send(result);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar tareas." });
+    respondError(res, error, "Error al consultar tareas.");
   }
 };
 
@@ -284,7 +284,7 @@ exports.findOne = async (req, res) => {
     const task = await getTaskForRole(req, taskId, { studentId: student?.id });
     res.send(student ? studentTaskJson(task, new Date()) : publicTask(task));
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar la tarea." });
+    respondError(res, error, "Error al consultar la tarea.");
   }
 };
 
@@ -314,7 +314,7 @@ exports.create = async (req, res) => {
     });
     res.status(201).send(task);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al crear la tarea." });
+    respondError(res, error, "Error al crear la tarea.");
   }
 };
 
@@ -348,7 +348,7 @@ exports.update = async (req, res) => {
     });
     res.send(updated);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al editar la tarea." });
+    respondError(res, error, "Error al editar la tarea.");
   }
 };
 
@@ -372,7 +372,7 @@ exports.deactivate = async (req, res) => {
     });
     res.send({ message: "Tarea desactivada.", id: task.id });
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al desactivar la tarea." });
+    respondError(res, error, "Error al desactivar la tarea.");
   }
 };
 
@@ -433,7 +433,7 @@ exports.getSubmissions = async (req, res) => {
       };
     }));
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar entregas." });
+    respondError(res, error, "Error al consultar entregas.");
   }
 };
 
@@ -515,7 +515,7 @@ exports.mySubmission = async (req, res) => {
       archivo: publicFile(submission.archivo?.toJSON())
     } : null);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar tu entrega." });
+    respondError(res, error, "Error al consultar tu entrega.");
   }
 };
 

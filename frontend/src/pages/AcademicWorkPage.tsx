@@ -4,8 +4,10 @@ import EmptyState from "../components/EmptyState"
 import ErrorState from "../components/ErrorState"
 import LoadingState from "../components/LoadingState"
 import StatusBadge from "../components/StatusBadge"
+import SubmissionForm from "../components/SubmissionForm"
 import { useAcademicPeriod } from "../context/AcademicPeriodContext"
 import type { AuthUser } from "../lib/api"
+import { ACCEPTED_FILES, validateFile } from "../lib/fileValidation"
 import { academicAssignmentsService } from "../services/academicAssignmentsService"
 import {
   academicWorkService,
@@ -14,10 +16,6 @@ import {
   type TaskSubmission,
 } from "../services/academicWorkService"
 import type { HorarioCatedratico } from "../types/api"
-
-const ACCEPTED_FILES =
-  ".pdf,.docx,.xlsx,.pptx,.txt,.jpg,.jpeg,.png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,image/jpeg,image/png"
-const MAX_FILE_BYTES = 20 * 1024 * 1024
 
 function localDateTime(value?: string) {
   if (!value) return ""
@@ -161,12 +159,9 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
     const targetForm = event.currentTarget
     const form = new FormData(targetForm)
     const file = form.get("file")
-    if (!(file instanceof File) || !file.size) {
-      setError("Selecciona un archivo.")
-      return
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      setError("El archivo excede el máximo permitido de 20 MiB.")
+    const problem = validateFile(file instanceof File ? file : null)
+    if (problem) {
+      setError(problem)
       return
     }
     setSaving(true)
@@ -357,13 +352,12 @@ export default function AcademicWorkPage({ user }: { user: AuthUser }) {
                   <p className="mt-3 text-sm text-emerald-700">Entregada el {new Date(task.miEntrega.entregadaEn).toLocaleString()} · {task.miEntrega.nombreOriginal}</p>
                 )}
                 {isStudent && task.estadoEntrega !== "entregada" && task.estadoEntrega !== "vencida" && (
-                  <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={(event) => uploadFile(event, (data) => academicWorkService.submitTask(task.id, data))}>
-                    <label className="text-sm font-semibold">
-                      Entregar archivo (máximo 20 MiB)
-                      <input className="mt-2 block max-w-full text-sm" accept={ACCEPTED_FILES} name="file" required type="file" />
-                    </label>
-                    <button className="h-10 rounded-xl bg-brand px-4 text-sm font-bold text-white disabled:opacity-50" disabled={saving} type="submit">{saving ? "Subiendo..." : "Enviar entrega"}</button>
-                  </form>
+                  <SubmissionForm onSubmit={async (data) => {
+                    setNotice("")
+                    await academicWorkService.submitTask(task.id, data)
+                    setNotice(`Entrega de «${task.titulo}» registrada correctamente.`)
+                    await load()
+                  }} />
                 )}
                 {canManage && (
                   <div className="mt-4 flex flex-wrap gap-2">

@@ -349,7 +349,6 @@ function TeacherHome({
         </section>
       </div>
       <QuickLinks title="Trabajo académico" links={teacherLinks} onNavigate={onNavigate} />
-      <PendingActivity />
     </div>
   )
 }

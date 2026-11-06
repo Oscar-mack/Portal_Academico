@@ -4,6 +4,7 @@ const db = require("../models");
 const ROLES = require("../config/roles.js");
 const storage = require("../services/r2Storage.js");
 const { uploadMultipart } = require("../utils/academicFileUpload.js");
+const { respondError } = require("../utils/httpErrors.js");
 
 const Tarea = db.tareas;
 const Curso = db.cursos;
@@ -267,7 +268,7 @@ exports.findAll = async (req, res) => {
     }
     res.send(result);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar tareas." });
+    respondError(res, error, "Error al consultar tareas.");
   }
 };
 
@@ -283,7 +284,7 @@ exports.findOne = async (req, res) => {
     const task = await getTaskForRole(req, taskId, { studentId: student?.id });
     res.send(student ? studentTaskJson(task, new Date()) : publicTask(task));
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar la tarea." });
+    respondError(res, error, "Error al consultar la tarea.");
   }
 };
 
@@ -313,7 +314,7 @@ exports.create = async (req, res) => {
     });
     res.status(201).send(task);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al crear la tarea." });
+    respondError(res, error, "Error al crear la tarea.");
   }
 };
 
@@ -347,7 +348,7 @@ exports.update = async (req, res) => {
     });
     res.send(updated);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al editar la tarea." });
+    respondError(res, error, "Error al editar la tarea.");
   }
 };
 
@@ -371,7 +372,7 @@ exports.deactivate = async (req, res) => {
     });
     res.send({ message: "Tarea desactivada.", id: task.id });
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al desactivar la tarea." });
+    respondError(res, error, "Error al desactivar la tarea.");
   }
 };
 
@@ -394,7 +395,7 @@ exports.addAttachment = async (req, res) => {
   } catch (error) {
     if (transaction && !transaction.finished) await transaction.rollback();
     await storage.removeObject(key).catch(() => {});
-    res.status(error.status || 500).send({ message: error.message || "Error al adjuntar el archivo." });
+    respondError(res, error, "Error al adjuntar el archivo.");
   }
 };
 
@@ -432,13 +433,17 @@ exports.getSubmissions = async (req, res) => {
       };
     }));
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar entregas." });
+    respondError(res, error, "Error al consultar entregas.");
   }
 };
+
+// Evita que un doble clic o un reintento simultáneo cree dos entregas del mismo alumno y tarea.
+const submissionsInFlight = new Set();
 
 exports.submit = async (req, res) => {
   const key = `submissions/${randomUUID()}`;
   let transaction;
+  let lockKey;
   try {
     const student = await db.alumnos.findOne({ where: { usuarioId: req.userId, activo: true } });
     if (!student) return res.status(403).send({ message: "No tienes un perfil de alumno activo asociado." });
@@ -454,6 +459,15 @@ exports.submit = async (req, res) => {
     if (!enrollment) return res.status(403).send({ message: "No estás inscrito en el curso y período de esta tarea." });
     const period = await Periodo.findByPk(task.periodoAcademicoId);
     if (period?.estado !== "abierto") return res.status(409).send({ message: "No se pueden registrar entregas en un período cerrado." });
+    const candidateKey = `${task.id}:${student.id}`;
+    if (submissionsInFlight.has(candidateKey)) {
+      return res.status(409).send({ message: "Ya hay una entrega en proceso para esta tarea." });
+    }
+    submissionsInFlight.add(candidateKey);
+    lockKey = candidateKey;
+    if (await Entrega.count({ where: { tareaId: task.id, alumnoId: student.id } })) {
+      return res.status(409).send({ message: "Ya registraste una entrega para esta tarea." });
+    }
     transaction = await db.sequelize.transaction();
     const { fileRecord } = await saveUploadedFile(req, key, "entrega_tarea_subida", { tareaId: task.id }, transaction);
     const delivery = await Entrega.create({
@@ -470,7 +484,9 @@ exports.submit = async (req, res) => {
   } catch (error) {
     if (transaction && !transaction.finished) await transaction.rollback();
     await storage.removeObject(key).catch(() => {});
-    res.status(error.status || 500).send({ message: error.message || "Error al registrar la entrega." });
+    respondError(res, error, "Error al registrar la entrega.");
+  } finally {
+    if (lockKey) submissionsInFlight.delete(lockKey);
   }
 };
 
@@ -499,7 +515,7 @@ exports.mySubmission = async (req, res) => {
       archivo: publicFile(submission.archivo?.toJSON())
     } : null);
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar tu entrega." });
+    respondError(res, error, "Error al consultar tu entrega.");
   }
 };
 

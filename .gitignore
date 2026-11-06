@@ -5,6 +5,13 @@ node_modules/
 .env.*
 .envrc
 
+# Local credentials and encrypted token stores
+.credentials/
+*.enc
+credentials.json
+client_secret*.json
+service-account*.json
+
 # Private keys and local certificates
 *.key
 *.pem
@@ -15,6 +22,7 @@ node_modules/
 *.log
 logs/
 tmp/
+.secrets/
 coverage/
 
 # Editor and operating system files
@@ -26,6 +34,5 @@ Thumbs.db
 # Local package-manager caches
 .npm/
 .cache/
-
 
 

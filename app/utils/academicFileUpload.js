@@ -113,7 +113,7 @@ async function uploadMultipart(req, storageKey) {
           validatorStream.destroy(error);
         }
         if (uploadPromise) await uploadPromise.catch(() => {});
-        await removeObject(storageKey);
+        if (error?.status !== 429) await removeObject(storageKey);
       } catch {
         // The original upload/validation error is the actionable failure.
       }

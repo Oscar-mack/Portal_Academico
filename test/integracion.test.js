@@ -638,6 +638,46 @@ test("autoinscripción usa la sección, valida cupos, programa, horario y solo l
     available.body.find(item => item.id === futureOffer.body.id).registrationReason,
     /inscripción abre/
   );
+  const program = await db.gradosCarreras.findByPk(ctx.gradoA);
+  await program.update({ activo: false });
+  const inactiveProgramOffers = await request(app)
+    .get(`/api/ofertas-curso/disponibles?periodoAcademicoId=${period.body.id}`)
+    .set(auth(ctx.tokens.alumno1));
+  assert.equal(inactiveProgramOffers.status, 200);
+  assert.deepEqual(inactiveProgramOffers.body, [], "no se ofrecen cursos de un programa inactivo");
+  await program.update({ activo: true });
+
+  const originalOfferFindAll = db.ofertasCurso.findAll;
+  db.ofertasCurso.findAll = async () => {
+    throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+      name: "SequelizeConnectionRefusedError"
+    });
+  };
+  try {
+    const unavailableOffers = await request(app)
+      .get(`/api/ofertas-curso/disponibles?periodoAcademicoId=${period.body.id}`)
+      .set(auth(ctx.tokens.alumno1));
+    assert.equal(unavailableOffers.status, 503);
+    assert.doesNotMatch(JSON.stringify(unavailableOffers.body), /ECONNREFUSED|127\.0\.0\.1/);
+  } finally {
+    db.ofertasCurso.findAll = originalOfferFindAll;
+  }
+
+  const originalTransaction = db.sequelize.transaction;
+  db.sequelize.transaction = async () => {
+    throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+      name: "SequelizeConnectionRefusedError"
+    });
+  };
+  try {
+    const unavailableEnrollment = await request(app).post("/api/asignaciones-curso")
+      .set(auth(ctx.tokens.alumno1))
+      .send({ ofertaCursoId: offer.body.id });
+    assert.equal(unavailableEnrollment.status, 503);
+    assert.doesNotMatch(JSON.stringify(unavailableEnrollment.body), /ECONNREFUSED|127\.0\.0\.1/);
+  } finally {
+    db.sequelize.transaction = originalTransaction;
+  }
   assert.equal((await request(app).get("/api/ofertas-curso")
     .set(auth(ctx.tokens.alumno1))).status, 403);
 

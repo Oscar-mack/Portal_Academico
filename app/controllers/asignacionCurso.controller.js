@@ -6,10 +6,12 @@ const { getAlumnoIdsVisibles } = require("../utils/access.js");
 const { seCruzan } = require("../utils/horarios.js");
 const HorarioCatedratico = db.horariosCatedratico;
 const ROLES = require("../config/roles.js");
+const { respondError } = require("../utils/httpErrors.js");
 
 async function enrollStudentFromSession(req, res) {
-  const transaction = await db.sequelize.transaction();
+  let transaction;
   try {
+    transaction = await db.sequelize.transaction();
     if (Object.keys(req.body).length !== 1 || req.body.alumnoId !== undefined || req.body.cursoId !== undefined) {
       await transaction.rollback();
       return res.status(400).send({
@@ -130,11 +132,15 @@ async function enrollStudentFromSession(req, res) {
     await transaction.commit();
     return res.status(201).send(asignacion);
   } catch (error) {
-    if (!transaction.finished) await transaction.rollback();
-    if (error.name === "SequelizeUniqueConstraintError") {
+    if (transaction && !transaction.finished) await transaction.rollback();
+    const code = error.parent?.code || error.original?.code || error.code;
+    if (error.name === "SequelizeUniqueConstraintError" || code === "23505") {
       return res.status(409).send({ message: "Ya estás inscrito en este curso durante el período seleccionado." });
     }
-    return res.status(500).send({ message: error.message || "No fue posible completar la inscripción." });
+    if (code === "23514") {
+      return res.status(409).send({ message: "La sección dejó de estar disponible; revisa su cupo, horario y período." });
+    }
+    return respondError(res, error, "No fue posible completar la inscripción.");
   }
 }
 
@@ -143,8 +149,9 @@ async function enrollStudentFromSession(req, res) {
 //        para evitar que solicitudes concurrentes excedan cupos o dupliquen inscripciones.
 exports.create = async (req, res) => {
   if (req.userRole === ROLES.ALUMNO) return enrollStudentFromSession(req, res);
-  const t = await db.sequelize.transaction();
+  let t;
   try {
+    t = await db.sequelize.transaction();
     const { alumnoId, cursoId, periodo, periodoAcademicoId } = req.body;
     if (!alumnoId || !cursoId) {
       await t.rollback();
@@ -218,11 +225,12 @@ exports.create = async (req, res) => {
     await t.commit();
     res.send(asignacion);
   } catch (error) {
-    await t.rollback();
-    if (error.name === "SequelizeUniqueConstraintError") {
+    if (t && !t.finished) await t.rollback();
+    const code = error.parent?.code || error.original?.code || error.code;
+    if (error.name === "SequelizeUniqueConstraintError" || code === "23505") {
       return res.status(409).send({ message: "El alumno ya tiene asignado este curso en el periodo indicado." });
     }
-    res.status(500).send({ message: error.message || "Error al asignar el curso." });
+    return respondError(res, error, "Error al asignar el curso.");
   }
 };
 

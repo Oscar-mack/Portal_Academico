@@ -145,7 +145,11 @@ export async function apiRequest<T = unknown>(
   let response: Response
 
   try {
-    response = await fetch(`${API_URL}${path}`, { ...options, headers })
+    response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      credentials: options.credentials ?? "same-origin",
+      headers,
+    })
   } catch {
     throw new ApiError(
       "No fue posible conectar con el servidor: la solicitud no recibió respuesta HTTP. Verifica que la API esté activa y que CORS_ORIGIN incluya el origen del portal. Los errores 401, 403 y 404 se informan por separado.",

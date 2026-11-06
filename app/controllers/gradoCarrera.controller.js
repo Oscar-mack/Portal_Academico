@@ -1,6 +1,7 @@
 const db = require("../models");
 const GradoCarrera = db.gradosCarreras;
 const ROLES = require("../config/roles.js");
+const { respondError } = require("../utils/httpErrors.js");
 
 exports.create = async (req, res) => {
 	try {
@@ -25,7 +26,7 @@ exports.findAll = async (req, res) => {
 		const gradosCarreras = await GradoCarrera.findAll({ where });
 		res.send(gradosCarreras);
 	} catch (error) {
-		res.status(500).send({ message: "Error al obtener los grados y carreras." });
+		respondError(res, error, "Error al obtener los grados y carreras.");
 	}
 };
 

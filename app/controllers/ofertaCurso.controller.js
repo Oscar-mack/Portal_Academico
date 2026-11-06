@@ -1,4 +1,5 @@
 const db = require("../models");
+const { respondError } = require("../utils/httpErrors.js");
 
 const Offer = db.ofertasCurso;
 const Student = db.alumnos;
@@ -26,9 +27,24 @@ function registrationState(offer, occupied, today = currentDate()) {
   return { seatsAvailable, registrationOpen: reason === null, registrationReason: reason };
 }
 
-function offerIncludes() {
+function offerIncludes(gradoCarreraId) {
+  const curso = {
+    model: db.cursos,
+    as: "curso",
+    include: [{ model: db.gradosCarreras, as: "gradoCarrera" }]
+  };
+  if (gradoCarreraId !== undefined) {
+    curso.where = { activo: true, gradoCarreraId };
+    curso.required = true;
+    curso.include = [{
+      model: db.gradosCarreras,
+      as: "gradoCarrera",
+      where: { activo: true },
+      required: true
+    }];
+  }
   return [
-    { model: db.cursos, as: "curso", include: [{ model: db.gradosCarreras, as: "gradoCarrera" }] },
+    curso,
     { model: db.catedraticos, as: "catedratico" },
     { model: db.periodosAcademicos, as: "periodoAcademico" },
     { model: db.horariosCatedratico, as: "horarios" }
@@ -51,7 +67,7 @@ exports.findAll = async (req, res) => {
     }));
     return res.send(results);
   } catch (error) {
-    return res.status(500).send({ message: error.message || "No fue posible consultar las secciones." });
+    return respondError(res, error, "No fue posible consultar las secciones.");
   }
 };
 
@@ -73,14 +89,10 @@ exports.disponibles = async (req, res) => {
 
     const offers = await Offer.findAll({
       where: { periodoAcademicoId, activo: true },
-      include: offerIncludes(),
+      include: offerIncludes(alumno.gradoCarreraId),
       order: [["cursoId", "ASC"], ["codigoSeccion", "ASC"]]
     });
-    const programOffers = offers.filter(offer =>
-      offer.curso?.activo &&
-      offer.curso.gradoCarreraId === alumno.gradoCarreraId &&
-      offer.periodoAcademico?.estado === "abierto"
-    );
+    const programOffers = offers.filter(offer => offer.periodoAcademico?.estado === "abierto");
     const assignedCourseIds = await Assignment.findAll({
       where: { alumnoId: alumno.id, periodoAcademicoId },
       attributes: ["cursoId"]
@@ -98,7 +110,7 @@ exports.disponibles = async (req, res) => {
     }));
     return res.send(results);
   } catch (error) {
-    return res.status(500).send({ message: error.message || "No fue posible consultar las secciones disponibles." });
+    return respondError(res, error, "No fue posible consultar las secciones disponibles.");
   }
 };
 

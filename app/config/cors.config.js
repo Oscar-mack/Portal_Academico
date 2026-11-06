@@ -1,5 +1,4 @@
-const DEFAULT_ORIGINS = [
-  "https://portal-academico-frontend.onrender.com",
+const DEVELOPMENT_ORIGINS = [
   "http://localhost:5173",
   "http://localhost:3000"
 ];
@@ -12,18 +11,29 @@ const FIGMA_ORIGIN_PATTERNS = [
 ];
 
 function configuredOrigins() {
-  const extra = (process.env.CORS_ORIGIN || "")
+  const configured = (process.env.CORS_ORIGIN || "")
     .split(",")
-    .map((origin) => origin.trim().replace(/\/+$/, ""))
-    .filter((origin) => origin && origin !== "*");
-  return new Set([...DEFAULT_ORIGINS, ...extra]);
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (configured.length > 0) {
+    return new Set(configured.filter((origin) => origin !== "*"));
+  }
+
+  return process.env.NODE_ENV === "production"
+    ? new Set()
+    : new Set(DEVELOPMENT_ORIGINS);
 }
 
 function isOriginAllowed(origin) {
-  return configuredOrigins().has(origin) || FIGMA_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
+  if (configuredOrigins().has(origin)) return true;
+  if ((process.env.CORS_ALLOW_FIGMA_PREVIEWS || "").trim().toLowerCase() !== "true") return false;
+  return FIGMA_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
 }
 
 const corsOptions = {
+  // Needed for the HttpOnly OAuth state cookie. Origins remain constrained to the allowlist above.
+  credentials: true,
   origin(origin, callback) {
     // Sin cabecera Origin (curl, servidor a servidor): CORS no aplica.
     if (!origin) return callback(null, true);

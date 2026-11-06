@@ -88,48 +88,97 @@ function validateProductionConfiguration() {
   }
 }
 
-async function startServer() {
+function listen(port) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, "0.0.0.0");
+    server.once("listening", () => resolve(server));
+    server.once("error", reject);
+  });
+}
+
+// Abre el puerto de inmediato (Render lo escanea durante una ventana limitada) y verifica
+// PostgreSQL en segundo plano; /ready responde 503 hasta que esa verificación termina.
+async function startServer({
+  database = db,
+  port = PORT,
+  exit = process.exit,
+  handleSignals = true
+} = {}) {
   const connectionSummary = dbConfig.getConnectionSummary();
+  const startup = { state: "starting" };
+  app.locals.startup = startup;
 
   try {
     validateProductionConfiguration();
-    console.log("Configuracion de PostgreSQL:", getDatabaseLogContext(connectionSummary));
-
-    await db.sequelize.authenticate();
-    console.log("Conexion con PostgreSQL verificada correctamente.");
-
-    await db.sequelize.query("SELECT 1 AS database_connection_check");
-    console.log("Consulta de prueba a PostgreSQL realizada correctamente.");
   } catch (error) {
-    logDatabaseError("Error al conectar con PostgreSQL:", error, connectionSummary);
-    process.exit(1);
+    startup.state = "failed";
+    logDatabaseError("Configuración de arranque inválida:", error, connectionSummary);
+    exit(1);
+    return {};
   }
 
+  let server;
   try {
-    if (isProduction) {
-      console.log("Sincronización automática omitida en producción; aplica las migraciones versionadas revisadas antes de usar las nuevas rutas.");
-    } else {
-      await db.sequelize.sync();
-      console.log("Base de datos sincronizada correctamente.");
-    }
-
-    // Render enruta por 0.0.0.0 y su proxy mantiene conexiones largas: el keep-alive de Node
-    // debe superar el suyo para evitar 502 intermitentes.
-    const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server is running on port ${PORT}.`);
-    });
-    server.keepAliveTimeout = 120000;
-    server.headersTimeout = 121000;
-
-    process.once("SIGTERM", () => {
-      console.log("SIGTERM recibido; cerrando el servidor.");
-      server.close(() => db.sequelize.close().finally(() => process.exit(0)));
-      setTimeout(() => process.exit(0), 10000).unref();
-    });
+    server = await listen(port);
   } catch (error) {
-    logDatabaseError("Error al sincronizar PostgreSQL:", error, connectionSummary);
-    process.exit(1);
+    startup.state = "failed";
+    console.error("No se pudo abrir el puerto HTTP:", { name: error.name, code: error.code });
+    exit(1);
+    return {};
   }
+  console.log(`Server is running on port ${server.address().port}.`);
+  server.keepAliveTimeout = 120000;
+  server.headersTimeout = 121000;
+
+  let stopping;
+  const shutdown = () => {
+    if (stopping) return stopping;
+    startup.state = "stopping";
+    stopping = new Promise(resolve => {
+      server.close(() => {
+        Promise.resolve(database.sequelize.close()).catch(() => {}).finally(resolve);
+      });
+      server.closeIdleConnections?.();
+    });
+    return stopping;
+  };
+
+  if (handleSignals) {
+    for (const signal of ["SIGTERM", "SIGINT"]) {
+      process.once(signal, () => {
+        console.log(`${signal} recibido; cerrando el servidor.`);
+        const timer = setTimeout(() => exit(0), 10000);
+        timer.unref();
+        shutdown().finally(() => exit(0));
+      });
+    }
+  }
+
+  const initialization = (async () => {
+    try {
+      console.log("Configuracion de PostgreSQL:", getDatabaseLogContext(connectionSummary));
+      await database.sequelize.authenticate();
+      console.log("Conexion con PostgreSQL verificada correctamente.");
+      await database.sequelize.query("SELECT 1 AS database_connection_check");
+      console.log("Consulta de prueba a PostgreSQL realizada correctamente.");
+      if (isProduction) {
+        console.log("Sincronización automática omitida en producción; aplica las migraciones versionadas revisadas antes de usar las nuevas rutas.");
+      } else {
+        await database.sequelize.sync();
+        console.log("Base de datos sincronizada correctamente.");
+      }
+      // Si llegó una señal de cierre durante la verificación, no se marca como preparado.
+      if (startup.state === "starting") startup.state = "ready";
+    } catch (error) {
+      if (startup.state === "stopping") return;
+      startup.state = "failed";
+      logDatabaseError("Error al conectar con PostgreSQL:", error, connectionSummary);
+      // Un servidor vivo pero sin base de datos no sirve: se sale para que Render lo reinicie.
+      exit(1);
+    }
+  })();
+
+  return { server, initialization, shutdown, startup };
 }
 
 process.on("unhandledRejection", reason => {
@@ -140,4 +189,6 @@ process.on("uncaughtException", error => {
   process.exit(1);
 });
 
-startServer();
+if (require.main === module) startServer();
+
+module.exports = { startServer };

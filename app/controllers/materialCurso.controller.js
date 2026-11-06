@@ -4,6 +4,7 @@ const db = require("../models");
 const ROLES = require("../config/roles.js");
 const storage = require("../services/r2Storage.js");
 const { uploadMultipart } = require("../utils/academicFileUpload.js");
+const { respondError } = require("../utils/httpErrors.js");
 
 const Material = db.materialesCurso;
 
@@ -101,7 +102,7 @@ exports.findAll = async (req, res) => {
       return item;
     }));
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al consultar materiales." });
+    respondError(res, error, "Error al consultar materiales.");
   }
 };
 
@@ -152,7 +153,43 @@ exports.create = async (req, res) => {
   } catch (error) {
     if (transaction && !transaction.finished) await transaction.rollback();
     await storage.removeObject(key).catch(() => {});
-    res.status(error.status || 500).send({ message: error.message || "Error al publicar el material." });
+    respondError(res, error, "Error al publicar el material.");
+  }
+};
+
+exports.update = async (req, res) => {
+  try {
+    const material = await Material.findByPk(validId(req.params.id, "id"));
+    if (!material || !material.activo) {
+      return res.status(404).send({ message: "Material no encontrado." });
+    }
+    const teacher = await teacherForRequest(req);
+    if (teacher.id !== material.catedraticoId) {
+      return res.status(403).send({ message: "No puedes modificar este material." });
+    }
+    const period = await db.periodosAcademicos.findByPk(material.periodoAcademicoId);
+    if (period?.estado !== "abierto") {
+      return res.status(409).send({ message: "No se puede editar material de un período cerrado." });
+    }
+    const allowed = ["titulo", "descripcion"];
+    if (!Object.keys(req.body).length || Object.keys(req.body).some(field => !allowed.includes(field))) {
+      return res.status(400).send({ message: "Solo se permite editar el título y la descripción del material." });
+    }
+    const values = {};
+    if (req.body.titulo !== undefined) values.titulo = text(req.body.titulo, "titulo", 150);
+    if (req.body.descripcion !== undefined) values.descripcion = text(req.body.descripcion, "descripcion", 2000, true);
+    await db.sequelize.transaction(async transaction => {
+      await material.update(values, { transaction });
+      await db.auditoriaTareas.create({
+        archivoId: material.archivoId,
+        usuarioId: req.userId,
+        accion: "material_curso_editado",
+        detalle: JSON.stringify({ materialId: material.id, campos: Object.keys(values) })
+      }, { transaction });
+    });
+    return res.send(material);
+  } catch (error) {
+    return respondError(res, error, "Error al editar el material.");
   }
 };
 
@@ -175,6 +212,6 @@ exports.deactivate = async (req, res) => {
     });
     res.send({ message: "Material desactivado.", id: material.id });
   } catch (error) {
-    res.status(error.status || 500).send({ message: error.message || "Error al desactivar material." });
+    respondError(res, error, "Error al desactivar material.");
   }
 };

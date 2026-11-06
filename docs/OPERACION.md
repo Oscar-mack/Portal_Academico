@@ -3,12 +3,14 @@
 ## Ambientes
 | Ambiente | NODE_ENV | Base de datos | Stripe | Notas |
 |---|---|---|---|---|
-| Desarrollo | development | PostgreSQL local | claves `sk_test_` | CORS abierto permitido |
+| Desarrollo | development | PostgreSQL local | claves `sk_test_` | Solo los orígenes localhost definidos por defecto o en `CORS_ORIGIN` |
 | Pruebas (CI) | test | SQLite en memoria (automático) | simulado | `npm test` |
 | Producción | production | PostgreSQL administrado | claves `sk_live_` | CORS exacto, HTTPS, secretos en el gestor del hosting |
 
 En producción `server.js` se niega a iniciar si falta `JWT_SECRET` (>=32 caracteres) o
-`CORS_ORIGIN` (distinto de `*`). Stripe es opcional para que la API académica siga
+`CORS_ORIGIN` (distinto de `*`). `CORS_ORIGIN` es una lista exacta y reemplaza los valores de desarrollo;
+no se agregan automáticamente dominios de producción. Los patrones HTTPS de Figma se rechazan salvo
+que `CORS_ALLOW_FIGMA_PREVIEWS=true` los habilite explícitamente. Stripe es opcional para que la API académica siga
 disponible: mientras falte `STRIPE_SECRET_KEY` o `STRIPE_WEBHOOK_SECRET`, Checkout
 responde `503` con las variables faltantes. Para habilitar pagos también configura
 `FRONTEND_URL` (URL HTTPS de la aplicación web, usada en los retornos de Checkout;
@@ -67,7 +69,7 @@ Cómo identificar qué corre en cada servicio sin adivinar:
 - Frontend: en el panel de Render, el commit de cada despliegue; en el navegador, Network: el host de las solicitudes es el de `VITE_API_URL`.
 - Un error "No fue posible conectar" significa que no hubo respuesta HTTP (proceso reiniciando o arranque en frío con 502 sin cabeceras CORS, DNS/URL incorrecta o CORS). Si otras pantallas del mismo origen reciben 401/403/404 legibles, la URL y CORS son correctas y el fallo es puntual (502/503, timeout o proceso caído).
 
-Variables del backend en producción: `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, `FRONTEND_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `APP_URL` es informativa (ver arriba). `render.yaml` solo declara algunas; `FRONTEND_URL` y las `R2_*` deben existir en el panel de Render. Frontend: `VITE_API_URL`.
+Variables del backend en producción: `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`, `FRONTEND_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `APP_URL` es informativa (ver arriba). Opcionalmente `STORAGE_PROVIDER=s3` con `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` y `S3_BUCKET` para un almacenamiento compatible con S3 o `STORAGE_PROVIDER=supabase` con `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` y `SUPABASE_BUCKET` para la API nativa de Supabase Storage (solo ensayo; sin `STORAGE_PROVIDER` se usa R2 y las `S3_*` se ignoran; ver `docs/tareas-y-archivos-academicos.md`). `render.yaml` solo declara algunas; `FRONTEND_URL` y las variables de almacenamiento deben existir en el panel de Render. Frontend: `VITE_API_URL`.
 
 ## Pruebas de concurrencia de reembolsos
 La CI ejecuta `npm test` con SQLite; cinco pruebas de concurrencia de `test/reembolsos.test.js` se omiten porque SQLite no representa los locks de PostgreSQL. Para ejecutarlas, crea una base nueva y dedicada en un PostgreSQL instalado localmente, no mediante SSH, túnel, proxy, contenedor compartido ni proveedor remoto. Por ejemplo:

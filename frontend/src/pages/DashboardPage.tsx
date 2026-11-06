@@ -17,6 +17,7 @@ const CursosPage = lazy(() => import("./admin/CursosPage"))
 const DocumentsPage = lazy(() => import("./DocumentsPage"))
 const EvaluationsPage = lazy(() => import("./EvaluationsPage"))
 const FinancialModulePage = lazy(() => import("./FinancialModulePage"))
+const GoogleDriveAdminPage = lazy(() => import("./admin/GoogleDriveAdminPage"))
 const GradosCarrerasPage = lazy(() => import("./admin/GradosCarrerasPage"))
 const NotesPage = lazy(() => import("./NotesPage"))
 const ProfilePage = lazy(() => import("./ProfilePage"))
@@ -192,6 +193,7 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
       { label: "Cargos y solvencia", icon: "payments", endpoint: "/api/cargos" },
       { label: "Pagos", icon: "payments", endpoint: "/api/pagos" },
       { label: "Documentos", icon: "reports", endpoint: "/api/reportes/boleta-pdf" },
+      { label: "Google Drive", icon: "settings" },
       { label: "Usuarios", icon: "users", endpoint: "/api/usuarios" },
     ],
     quickActions: [
@@ -526,6 +528,18 @@ export default function DashboardPage({
   const [dashboardPayload, setDashboardPayload] =
     useState<DashboardResponse | null>(null)
   const [fatalError, setFatalError] = useState("")
+  const [driveCallbackResult, setDriveCallbackResult] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (user.rol !== "admin") return
+    const result = new URLSearchParams(window.location.search).get("googleDrive")
+    if (!result) return
+    setDriveCallbackResult(result)
+    setActiveNav("Google Drive")
+    const url = new URL(window.location.href)
+    url.searchParams.delete("googleDrive")
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`)
+  }, [user.rol])
 
   useEffect(() => {
     if (periodsLoading) return
@@ -750,6 +764,8 @@ export default function DashboardPage({
               <UsuariosPage />
             ) : user.rol === "admin" && activeNav === "Documentos" ? (
               <DocumentsPage user={user} />
+            ) : user.rol === "admin" && activeNav === "Google Drive" ? (
+              <GoogleDriveAdminPage user={user} callbackResult={driveCallbackResult} />
             ) : user.rol === "catedratico" && activeNav === "Mis alumnos" ? (
               <AcademicAssignmentsPage user={user} />
             ) : user.rol === "catedratico" &&

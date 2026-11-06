@@ -167,6 +167,14 @@ app.get("/", (req, res) => {
 // Liveness: el proceso responde. Readiness: además hay conexión con la base de datos.
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.get("/ready", async (req, res) => {
+  // server.js publica app.locals.startup mientras arranca; sin él (p. ej. en pruebas) solo cuentan las comprobaciones en vivo.
+  const startup = app.locals.startup;
+  if (startup && startup.state !== "ready") {
+    return res.status(503).json({
+      status: "unavailable",
+      checks: { database: startup.state === "starting" ? "starting" : "unavailable", schema: "unknown" }
+    });
+  }
   try {
     const missingSchema = await withTimeout((async () => {
       await db.sequelize.query("SELECT 1");
@@ -217,6 +225,7 @@ require("./app/routes/evaluacion.routes")(app);
 require("./app/routes/tarea.routes")(app);
 require("./app/routes/materialCurso.routes")(app);
 require("./app/routes/archivoAcademico.routes")(app);
+require("./app/routes/googleDrive.routes")(app);
 require("./app/routes/cargo.routes")(app);
 require("./app/routes/dashboard.routes")(app);
 require("./app/routes/requisitoSolvencia.routes")(app);

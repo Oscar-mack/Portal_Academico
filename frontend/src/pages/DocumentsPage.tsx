@@ -364,7 +364,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
               </p>
               <h2 className="mt-1 text-lg font-bold">Información académica oficial</h2>
             </div>
-            <div className="grid gap-4 lg:grid-cols-2">
+            <div className={user.rol === "alumno" ? "grid gap-4" : "grid gap-4 lg:grid-cols-2"}>
               <DocumentCard
                 action="Descargar boleta PDF"
                 available={Boolean(effectiveStudentId)}
@@ -380,21 +380,23 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
                 }
                 student={selectedStudent}
               />
-              <article className="flex h-full flex-col rounded-2xl border border-dashed border-line bg-canvas/35 p-5">
-                <span className="grid size-12 place-items-center rounded-xl bg-line/60 text-muted">
-                  <DocumentIcon name="academic" />
-                </span>
-                <StatusBadge tone="neutral">
-                  Sin endpoint adicional
-                </StatusBadge>
-                <h3 className="mt-5 text-lg font-bold">
-                  Otros documentos académicos
-                </h3>
-                <p className="mt-2 text-sm leading-6 text-muted">
-                  La API actual no expone certificados, constancias,
-                  expedientes ni documentos académicos adicionales.
-                </p>
-              </article>
+              {user.rol !== "alumno" && (
+                <article className="flex h-full flex-col rounded-2xl border border-dashed border-line bg-canvas/35 p-5">
+                  <span className="grid size-12 place-items-center rounded-xl bg-line/60 text-muted">
+                    <DocumentIcon name="academic" />
+                  </span>
+                  <StatusBadge tone="neutral">
+                    Sin endpoint adicional
+                  </StatusBadge>
+                  <h3 className="mt-5 text-lg font-bold">
+                    Otros documentos académicos
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-muted">
+                    La API actual no expone certificados, constancias,
+                    expedientes ni documentos académicos adicionales.
+                  </p>
+                </article>
+              )}
             </div>
           </section>
 
@@ -532,34 +534,36 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
             </section>
           )}
 
-          <section className="rounded-2xl border border-dashed border-line bg-canvas/35 p-5 sm:p-6">
-            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-widest text-brand-soft">
-                  Gestión documental futura
-                </p>
-                <h2 className="mt-1 text-lg font-bold">
-                  Pendiente de desarrollo backend
-                </h2>
-              </div>
-              <StatusBadge tone="warning">Sin endpoints</StatusBadge>
-            </div>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-muted">
-              Estas capacidades no ejecutan acciones ni muestran documentos
-              ficticios. Requieren contrato, almacenamiento y autorización en
-              el backend.
-            </p>
-            <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {futureCapabilities.map((capability) => (
-                <div
-                  className="rounded-xl border border-line bg-white/70 px-4 py-3 text-sm font-semibold text-muted"
-                  key={capability}
-                >
-                  {capability}
+          {user.rol !== "alumno" && (
+            <section className="rounded-2xl border border-dashed border-line bg-canvas/35 p-5 sm:p-6">
+              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-brand-soft">
+                    Gestión documental futura
+                  </p>
+                  <h2 className="mt-1 text-lg font-bold">
+                    Pendiente de desarrollo backend
+                  </h2>
                 </div>
-              ))}
-            </div>
-          </section>
+                <StatusBadge tone="warning">Sin endpoints</StatusBadge>
+              </div>
+              <p className="mt-3 max-w-3xl text-sm leading-6 text-muted">
+                Estas capacidades no ejecutan acciones ni muestran documentos
+                ficticios. Requieren contrato, almacenamiento y autorización en
+                el backend.
+              </p>
+              <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {futureCapabilities.map((capability) => (
+                  <div
+                    className="rounded-xl border border-line bg-white/70 px-4 py-3 text-sm font-semibold text-muted"
+                    key={capability}
+                  >
+                    {capability}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
     </AdminPage>

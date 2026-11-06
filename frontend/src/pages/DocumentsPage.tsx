@@ -231,7 +231,9 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
     setSolvency(null)
     setError("")
     Promise.all([
-      financeService.listRequirements(),
+      user.rol === "alumno"
+        ? Promise.resolve([])
+        : financeService.listRequirements(),
       effectiveStudentId
         ? financeService.getSolvency(effectiveStudentId)
         : Promise.resolve(null),
@@ -256,7 +258,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
     return () => {
       active = false
     }
-  }, [effectiveStudentId, financialAccess, refreshKey])
+  }, [effectiveStudentId, financialAccess, refreshKey, user.rol])
 
   async function download(kind: "report-card" | "account") {
     if (!effectiveStudentId) return
@@ -487,50 +489,52 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
                 </article>
               </div>
 
-              <div className="mt-4 rounded-2xl border border-line bg-white p-5">
-                <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-                  <div>
-                    <h3 className="text-sm font-bold">
-                      Requisitos configurados
-                    </h3>
-                    <p className="mt-1 text-xs text-muted">
-                      Configuración obtenida de `/api/requisitos-solvencia`
-                    </p>
+              {user.rol !== "alumno" && (
+                <div className="mt-4 rounded-2xl border border-line bg-white p-5">
+                  <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                    <div>
+                      <h3 className="text-sm font-bold">
+                        Requisitos configurados
+                      </h3>
+                      <p className="mt-1 text-xs text-muted">
+                        Configuración obtenida de `/api/requisitos-solvencia`
+                      </p>
+                    </div>
+                    <StatusBadge tone="info">
+                      {requirements.length} requisitos
+                    </StatusBadge>
                   </div>
-                  <StatusBadge tone="info">
-                    {requirements.length} requisitos
-                  </StatusBadge>
-                </div>
-                {requirements.length ? (
-                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                    {requirements.map((requirement) => (
-                      <div
-                        className="flex items-center justify-between gap-3 rounded-xl bg-canvas/50 px-4 py-3"
-                        key={requirement.id}
-                      >
-                        <span className="text-sm font-semibold">
-                          {requirement.tipoDocumento}
-                        </span>
-                        <StatusBadge
-                          tone={
-                            requirement.requiereSolvencia
-                              ? "warning"
-                              : "neutral"
-                          }
+                  {requirements.length ? (
+                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                      {requirements.map((requirement) => (
+                        <div
+                          className="flex items-center justify-between gap-3 rounded-xl bg-canvas/50 px-4 py-3"
+                          key={requirement.id}
                         >
-                          {requirement.requiereSolvencia
-                            ? "Requiere solvencia"
-                            : "No requerida"}
-                        </StatusBadge>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-4 text-sm text-muted">
-                    No hay requisitos configurados.
-                  </p>
-                )}
-              </div>
+                          <span className="text-sm font-semibold">
+                            {requirement.tipoDocumento}
+                          </span>
+                          <StatusBadge
+                            tone={
+                              requirement.requiereSolvencia
+                                ? "warning"
+                                : "neutral"
+                            }
+                          >
+                            {requirement.requiereSolvencia
+                              ? "Requiere solvencia"
+                              : "No requerida"}
+                          </StatusBadge>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm text-muted">
+                      No hay requisitos configurados.
+                    </p>
+                  )}
+                </div>
+              )}
             </section>
           )}
 

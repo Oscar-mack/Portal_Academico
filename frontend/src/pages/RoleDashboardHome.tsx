@@ -359,12 +359,14 @@ function StudentOverview({
   onDownload,
   downloading,
   links = studentLinks,
+  showActivity = false,
 }: {
   summary: StudentDashboardSummary
   onNavigate: (value: string) => void
   onDownload: (kind: "report" | "account", studentId: number) => void
   downloading: boolean
   links?: Array<{ label: string; destination: string; icon: HomeIcon }>
+  showActivity?: boolean
 }) {
   const balances = Object.entries(summary.saldoPendientePorMoneda)
   return (
@@ -400,7 +402,7 @@ function StudentOverview({
         </section>
       </div>
       <QuickLinks title="Mi portal académico" links={links} onNavigate={onNavigate} />
-      <PendingActivity />
+      {showActivity && <PendingActivity />}
     </div>
   )
 }
@@ -631,6 +633,7 @@ export default function RoleDashboardHome({
                 links={parentLinks}
                 onDownload={download}
                 onNavigate={onNavigate}
+                showActivity
                 summary={selectedStudent}
               />
               <section className="rounded-2xl border border-line bg-white p-6">

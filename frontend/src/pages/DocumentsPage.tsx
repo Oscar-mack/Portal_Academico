@@ -538,7 +538,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
             </section>
           )}
 
-          {user.rol !== "alumno" && (
+          {user.rol !== "alumno" && user.rol !== "catedratico" && (
             <section className="rounded-2xl border border-dashed border-line bg-canvas/35 p-5 sm:p-6">
               <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                 <div>

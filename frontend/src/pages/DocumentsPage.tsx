@@ -231,7 +231,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
     setSolvency(null)
     setError("")
     Promise.all([
-      user.rol === "alumno"
+      user.rol === "alumno" || user.rol === "padre"
         ? Promise.resolve([])
         : financeService.listRequirements(),
       effectiveStudentId
@@ -366,7 +366,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
               </p>
               <h2 className="mt-1 text-lg font-bold">Información académica oficial</h2>
             </div>
-            <div className={user.rol === "alumno" || user.rol === "catedratico" ? "grid gap-4" : "grid gap-4 lg:grid-cols-2"}>
+            <div className={user.rol === "alumno" || user.rol === "catedratico" || user.rol === "padre" ? "grid gap-4" : "grid gap-4 lg:grid-cols-2"}>
               <DocumentCard
                 action="Descargar boleta PDF"
                 available={Boolean(effectiveStudentId)}
@@ -382,7 +382,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
                 }
                 student={selectedStudent}
               />
-              {user.rol !== "alumno" && user.rol !== "catedratico" && (
+              {user.rol !== "alumno" && user.rol !== "catedratico" && user.rol !== "padre" && (
                 <article className="flex h-full flex-col rounded-2xl border border-dashed border-line bg-canvas/35 p-5">
                   <span className="grid size-12 place-items-center rounded-xl bg-line/60 text-muted">
                     <DocumentIcon name="academic" />
@@ -489,7 +489,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
                 </article>
               </div>
 
-              {user.rol !== "alumno" && (
+              {user.rol !== "alumno" && user.rol !== "padre" && (
                 <div className="mt-4 rounded-2xl border border-line bg-white p-5">
                   <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                     <div>
@@ -538,7 +538,7 @@ export default function DocumentsPage({ user }: { user: AuthUser }) {
             </section>
           )}
 
-          {user.rol !== "alumno" && user.rol !== "catedratico" && (
+          {user.rol !== "alumno" && user.rol !== "catedratico" && user.rol !== "padre" && (
             <section className="rounded-2xl border border-dashed border-line bg-canvas/35 p-5 sm:p-6">
               <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                 <div>

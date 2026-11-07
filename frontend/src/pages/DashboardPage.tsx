@@ -637,29 +637,8 @@ export default function DashboardPage({
           >
             <Icon name="menu" />
           </button>
-          <div className="relative hidden max-w-md flex-1 sm:block">
-            <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4 text-muted">
-              <Icon name="search" className="size-[1.1rem]" />
-            </span>
-            <input
-              aria-label="Búsqueda global no disponible"
-              className="h-11 w-full cursor-not-allowed rounded-xl border border-line bg-white pr-4 pl-11 text-sm opacity-60 outline-none placeholder:text-muted/65"
-              disabled
-              placeholder="Búsqueda global pendiente de endpoint"
-              type="search"
-            />
-          </div>
           <div className="ml-auto flex items-center gap-3">
             <AcademicPeriodSelector />
-            <button
-              aria-label="Notificaciones no disponibles"
-              className="grid size-10 cursor-not-allowed place-items-center rounded-xl border border-line bg-white text-muted opacity-50"
-              disabled
-              title="La API no expone notificaciones"
-              type="button"
-            >
-              <Icon name="bell" className="size-[1.15rem]" />
-            </button>
             <div className="hidden items-center gap-3 sm:flex">
               <div className="grid size-10 place-items-center rounded-full bg-brand text-xs font-bold text-white">
                 {initials(user)}

@@ -260,11 +260,6 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
     description: "Da seguimiento al rendimiento y los compromisos de tus estudiantes vinculados.",
     navigation: [
       { label: "Inicio", icon: "home" },
-      {
-        label: "Mis estudiantes",
-        icon: "children",
-        endpoint: "/api/padres-alumnos/mis-alumnos",
-      },
       { label: "Calificaciones", icon: "grades", endpoint: "/api/notas" },
       { label: "Cursos", icon: "courses", endpoint: "/api/asignaciones-curso" },
       { label: "Horarios", icon: "calendar", endpoint: "/api/horarios-catedratico" },
@@ -274,11 +269,6 @@ const roleConfigs: Record<UserRole, RoleConfig> = {
       { label: "Mi perfil", icon: "profile", endpoint: "/api/auth/perfil" },
     ],
     quickActions: [
-      {
-        label: "Ver estudiantes",
-        icon: "children",
-        endpoint: "/api/padres-alumnos/mis-alumnos",
-      },
       { label: "Ver calificaciones", icon: "grades", endpoint: "/api/notas" },
       { label: "Consultar pagos", icon: "payments", endpoint: "/api/pagos" },
       { label: "Descargar boleta", icon: "reports" },
@@ -721,8 +711,7 @@ export default function DashboardPage({
                 </section>
               }
             >
-              {activeNav === config.navigation[0].label ||
-              (user.rol === "padre" && activeNav === "Mis estudiantes") ? (
+              {activeNav === config.navigation[0].label ? (
               <RoleDashboardHome
                 loading={!dashboardPayload && !fatalError}
                 onNavigate={setActiveNav}

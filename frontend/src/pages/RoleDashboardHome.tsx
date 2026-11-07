@@ -224,7 +224,6 @@ const studentLinks = [
 ] satisfies Array<{ label: string; destination: string; icon: HomeIcon }>
 
 const parentLinks = [
-  { label: "Mis estudiantes", destination: "Mis estudiantes", icon: "people" },
   { label: "Cursos", destination: "Cursos", icon: "book" },
   { label: "Horarios", destination: "Horarios", icon: "calendar" },
   { label: "Calificaciones", destination: "Calificaciones", icon: "grade" },
@@ -359,6 +358,7 @@ function StudentOverview({
   onDownload,
   downloading,
   links = studentLinks,
+  coursesDestination = "Mis cursos",
   showActivity = false,
 }: {
   summary: StudentDashboardSummary
@@ -366,6 +366,7 @@ function StudentOverview({
   onDownload: (kind: "report" | "account", studentId: number) => void
   downloading: boolean
   links?: Array<{ label: string; destination: string; icon: HomeIcon }>
+  coursesDestination?: string
   showActivity?: boolean
 }) {
   const balances = Object.entries(summary.saldoPendientePorMoneda)
@@ -383,7 +384,7 @@ function StudentOverview({
           <p className="mt-1 text-xs text-muted">Cursos inscritos en el período</p>
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             {summary.cursos.length ? summary.cursos.map((course) => (
-              <button className="rounded-xl border border-line p-4 text-left hover:border-brand-soft/30 hover:bg-brand-soft/5" key={course.id} onClick={() => onNavigate("Mis cursos")} type="button">
+              <button className="rounded-xl border border-line p-4 text-left hover:border-brand-soft/30 hover:bg-brand-soft/5" key={course.id} onClick={() => onNavigate(coursesDestination)} type="button">
                 <span className="font-mono text-xs font-bold text-brand-soft">{course.codigo}</span>
                 <span className="mt-2 block text-sm font-bold">{course.nombre}</span>
                 <span className="mt-1 block text-xs text-muted">{course.gradoCarrera?.nombre ?? "Curso inscrito"}</span>
@@ -407,6 +408,78 @@ function StudentOverview({
   )
 }
 
+function ParentSchedule({ studentId, periodId }: { studentId: number; periodId: number | null }) {
+  const [schedules, setSchedules] = useState<HorarioCatedratico[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [retry, setRetry] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError("")
+    academicAssignmentsService.listSchedules({
+      alumnoId: studentId,
+      periodoAcademicoId: periodId ?? undefined,
+    })
+      .then((rows) => {
+        if (active) setSchedules(rows)
+      })
+      .catch((requestError) => {
+        if (active) {
+          setError(requestError instanceof Error
+            ? requestError.message
+            : "No fue posible consultar el horario del estudiante.")
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => { active = false }
+  }, [studentId, periodId, retry])
+
+  return (
+    <section className="rounded-2xl border border-line bg-white p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-bold">Horario del estudiante</h2>
+          <p className="mt-1 text-xs text-muted">Bloques visibles del período seleccionado</p>
+        </div>
+        {!loading && !error && <StatusBadge tone="info">{schedules.length} bloques</StatusBadge>}
+      </div>
+      {loading ? (
+        <LoadingState rows={3} />
+      ) : error ? (
+        <div className="mt-5">
+          <ErrorState message={error} onRetry={() => setRetry((value) => value + 1)} />
+        </div>
+      ) : schedules.length ? (
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {schedules.map((schedule) => (
+            <div className="rounded-xl border border-line p-4" key={schedule.id}>
+              <p className="text-sm font-bold">
+                {schedule.curso?.nombre ?? `Curso ID ${schedule.cursoId}`}
+              </p>
+              <p className="mt-2 text-xs font-semibold text-brand-soft">
+                {schedule.dia} · {schedule.horaInicio.slice(0, 5)}–{schedule.horaFin.slice(0, 5)}
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                {schedule.catedratico
+                  ? `${schedule.catedratico.nombre} ${schedule.catedratico.apellido}`
+                  : "Catedrático no disponible"}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-5 rounded-xl border border-dashed border-line p-6 text-center text-sm text-muted">
+          Sin horario visible para este estudiante.
+        </p>
+      )}
+    </section>
+  )
+}
+
 export default function RoleDashboardHome({
   user,
   payload,
@@ -421,10 +494,14 @@ export default function RoleDashboardHome({
   const { selectedPeriodId } = useAcademicPeriod()
   const [teacherProgress, setTeacherProgress] = useState<TeacherProgress | null>(null)
   const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null)
-  const [studentSchedules, setStudentSchedules] = useState<HorarioCatedratico[]>([])
   const [supplementalLoading, setSupplementalLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState("")
+  const [downloadError, setDownloadError] = useState<{
+    studentId: number
+    periodId: number | null
+    message: string
+  } | null>(null)
 
   const parentPayload = payload?.rol === "padre" ? payload : null
   const selectedStudent = useMemo(
@@ -503,40 +580,10 @@ export default function RoleDashboardHome({
     loadTeacherProgress()
   }, [loadTeacherProgress])
 
-  useEffect(() => {
-    if (payload?.rol !== "padre" || !selectedStudent?.alumno.id) return
-    let active = true
-    setSupplementalLoading(true)
-    setStudentSchedules([])
-    setError("")
-    academicAssignmentsService
-      .listSchedules({
-        alumnoId: selectedStudent.alumno.id,
-        periodoAcademicoId: selectedPeriodId ?? undefined,
-      })
-      .then((rows) => {
-        if (active) setStudentSchedules(rows)
-      })
-      .catch((requestError) => {
-        if (active) {
-          setError(
-            requestError instanceof Error
-              ? requestError.message
-              : "No fue posible consultar el horario del estudiante.",
-          )
-        }
-      })
-      .finally(() => {
-        if (active) setSupplementalLoading(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [payload?.rol, selectedStudent, selectedPeriodId])
-
   async function download(kind: "report" | "account", studentId: number) {
     setDownloading(true)
-    setError("")
+    if (user.rol !== "padre") setError("")
+    setDownloadError(null)
     try {
       const blob =
         kind === "report"
@@ -553,11 +600,14 @@ export default function RoleDashboardHome({
           : `estado-cuenta-alumno-${studentId}.pdf`,
       )
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "No fue posible descargar el documento.",
-      )
+      const message = requestError instanceof Error
+        ? requestError.message
+        : "No fue posible descargar el documento."
+      if (user.rol === "padre") {
+        setDownloadError({ studentId, periodId: selectedPeriodId, message })
+      } else {
+        setError(message)
+      }
     } finally {
       setDownloading(false)
     }
@@ -577,6 +627,11 @@ export default function RoleDashboardHome({
           />
         </div>
       )}
+      {downloadError &&
+        downloadError.periodId === selectedPeriodId &&
+        payload.rol === "padre" && selectedStudent?.alumno.id === downloadError.studentId && (
+          <div className="mb-6"><ErrorState message={downloadError.message} /></div>
+        )}
       {payload.rol === "admin" && (
         <AdminHome onNavigate={onNavigate} payload={payload} />
       )}
@@ -629,6 +684,7 @@ export default function RoleDashboardHome({
           {selectedStudent ? (
             <>
               <StudentOverview
+                coursesDestination="Cursos"
                 downloading={downloading}
                 links={parentLinks}
                 onDownload={download}
@@ -636,46 +692,11 @@ export default function RoleDashboardHome({
                 showActivity
                 summary={selectedStudent}
               />
-              <section className="rounded-2xl border border-line bg-white p-6">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-base font-bold">Horario del estudiante</h2>
-                    <p className="mt-1 text-xs text-muted">
-                      Bloques visibles del período seleccionado
-                    </p>
-                  </div>
-                  <StatusBadge tone="info">
-                    {studentSchedules.length} bloques
-                  </StatusBadge>
-                </div>
-                {supplementalLoading ? (
-                  <LoadingState rows={3} />
-                ) : studentSchedules.length ? (
-                  <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    {studentSchedules.map((schedule) => (
-                      <div className="rounded-xl border border-line p-4" key={schedule.id}>
-                        <p className="text-sm font-bold">
-                          {schedule.curso?.nombre ??
-                            `Curso ID ${schedule.cursoId}`}
-                        </p>
-                        <p className="mt-2 text-xs font-semibold text-brand-soft">
-                          {schedule.dia} · {schedule.horaInicio.slice(0, 5)}–
-                          {schedule.horaFin.slice(0, 5)}
-                        </p>
-                        <p className="mt-1 text-xs text-muted">
-                          {schedule.catedratico
-                            ? `${schedule.catedratico.nombre} ${schedule.catedratico.apellido}`
-                            : "Catedrático no disponible"}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-5 rounded-xl border border-dashed border-line p-6 text-center text-sm text-muted">
-                    Sin horario visible para este estudiante.
-                  </p>
-                )}
-              </section>
+              <ParentSchedule
+                key={`${selectedStudent.alumno.id}-${selectedPeriodId}`}
+                studentId={selectedStudent.alumno.id}
+                periodId={selectedPeriodId}
+              />
             </>
           ) : (
             <section className="rounded-2xl border border-line bg-white p-8 text-center text-sm text-muted">
